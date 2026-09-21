@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from xiaoliang.config import DEFAULT_CONFIG, load_config, save_config
 
 
@@ -32,7 +34,9 @@ def test_merges_known_keys_and_ignores_unknown(tmp_path):
 def test_save_then_load_roundtrip(tmp_path):
     p = tmp_path / "config.json"
     save_config({"scale": 4, "walk_speed": 120.0, "paused": True}, p)
-    assert load_config(p) == {"scale": 4, "walk_speed": 120.0, "paused": True}
+    # v0.2：旧文件缺 sleep 键时由 load_config 补默认值，期望 dict 需含之
+    assert load_config(p) == {"scale": 4, "walk_speed": 120.0, "paused": True,
+                              "sleep_start": "23:00", "sleep_end": "07:00"}
 
 
 def test_wrong_typed_values_fall_back_per_key(tmp_path):
@@ -81,3 +85,51 @@ def test_walk_speed_int_coerced_to_float(tmp_path):
     cfg = load_config(p)
     assert cfg["walk_speed"] == 90.0
     assert isinstance(cfg["walk_speed"], float)
+
+
+# ── v0.2：睡眠时段配置（spec §2.5） ────────────────────────────────
+
+def test_sleep_keys_default(tmp_path):
+    cfg = load_config(tmp_path / "absent.json")
+    assert cfg["sleep_start"] == "23:00"
+    assert cfg["sleep_end"] == "07:00"
+
+
+def test_sleep_keys_valid_custom(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text('{"sleep_start": "22:30", "sleep_end": "06:15"}',
+                 encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg["sleep_start"] == "22:30"
+    assert cfg["sleep_end"] == "06:15"
+
+
+@pytest.mark.parametrize("bad", [
+    "24:00", "7:00", "23:60", "2300", "", "ab:cd", None, 23, True,
+])
+def test_sleep_keys_invalid_fall_back(tmp_path, bad):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"sleep_start": bad, "sleep_end": bad}),
+                 encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg["sleep_start"] == "23:00"
+    assert cfg["sleep_end"] == "07:00"
+
+
+def test_sleep_keys_equal_fall_back(tmp_path):
+    # 相等 = 空窗口（永不睡觉），视为非法配置，两键一起回退默认
+    p = tmp_path / "config.json"
+    p.write_text('{"sleep_start": "08:00", "sleep_end": "08:00"}',
+                 encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg["sleep_start"] == "23:00"
+    assert cfg["sleep_end"] == "07:00"
+
+
+def test_one_sleep_key_invalid_only_that_key_falls_back(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text('{"sleep_start": "22:00", "sleep_end": " nope"}',
+                 encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg["sleep_start"] == "22:00"   # 合法键保留
+    assert cfg["sleep_end"] == "07:00"     # 非法键回退

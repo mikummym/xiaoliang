@@ -1,6 +1,7 @@
 """配置读写：config.json 加载/保存，缺失或损坏时回退默认值。"""
 import json
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -10,6 +11,8 @@ DEFAULT_CONFIG = {
     "scale": 2,
     "walk_speed": 60.0,
     "paused": False,
+    "sleep_start": "23:00",   # 睡眠时段起点（含），HH:MM 24 小时制
+    "sleep_end": "07:00",     # 睡眠时段终点（不含）；start>end 表示跨午夜
 }
 
 
@@ -43,10 +46,23 @@ def _coerce_paused(v):
     return v
 
 
+# HH:MM 24 小时制（spec §2.5）：00:00–23:59，分钟 00–59
+_HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+def _coerce_hhmm(v):
+    """sleep_start/sleep_end 必须是合法 'HH:MM' 字符串。"""
+    if not isinstance(v, str) or not _HHMM_RE.match(v):
+        raise ValueError(f"必须是 'HH:MM' 格式字符串，收到 {v!r}")
+    return v
+
+
 _COERCE = {
     "scale": _coerce_scale,
     "walk_speed": _coerce_walk_speed,
     "paused": _coerce_paused,
+    "sleep_start": _coerce_hhmm,
+    "sleep_end": _coerce_hhmm,
 }
 
 
@@ -82,6 +98,13 @@ def load_config(path: Path) -> dict:
         except (ValueError, TypeError) as exc:
             logger.warning("配置项 %s=%r 非法，使用默认值 %r: %s",
                            key, data[key], DEFAULT_CONFIG[key], exc)
+    # 跨键校验：起止相等 = 空窗口（永不睡觉），视为非法配置，双双回退默认
+    # （spec §7：start==end 视为不睡觉，校验时回退）
+    if cfg["sleep_start"] == cfg["sleep_end"]:
+        logger.warning("sleep_start 与 sleep_end 相同（%s），回退默认睡眠时段",
+                       cfg["sleep_start"])
+        cfg["sleep_start"] = DEFAULT_CONFIG["sleep_start"]
+        cfg["sleep_end"] = DEFAULT_CONFIG["sleep_end"]
     return cfg
 
 

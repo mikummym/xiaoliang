@@ -24,6 +24,36 @@
       "frames": 2,
       "fps": 6
     },
+    "poke_react": {
+      "file": "poke_react.png",
+      "frames": 2,
+      "fps": 6
+    },
+    "eating": {
+      "file": "eating.png",
+      "frames": 4,
+      "fps": 6
+    },
+    "sleeping": {
+      "file": "sleeping.png",
+      "frames": 2,
+      "fps": 2
+    },
+    "woken": {
+      "file": "woken.png",
+      "frames": 2,
+      "fps": 3
+    },
+    "climbing": {
+      "file": "climbing.png",
+      "frames": 4,
+      "fps": 8
+    },
+    "sitting_top": {
+      "file": "sitting_top.png",
+      "frames": 4,
+      "fps": 3
+    },
     "walk_left": {
       "file": "walk_left.png",
       "frames": 6,

@@ -28,6 +28,9 @@ class PetTray(QSystemTrayIcon):
         self.setContextMenu(menu)
         self._menu = menu  # 保持引用，防止被垃圾回收
         self.activated.connect(self._on_activated)
+        # 暂停双向同步（spec §3）：右键菜单调 machine.set_paused 时，状态机
+        # 经此回调通知托盘刷新勾选与文字；反向（托盘→状态机）原有逻辑不变
+        machine.add_pause_listener(self.sync_pause)
 
     def _on_toggle_pause(self, checked: bool) -> None:
         self.machine.set_paused(checked)
@@ -38,3 +41,11 @@ class PetTray(QSystemTrayIcon):
         # 一次 DoubleClick，故切换恰好一次。
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
             self._pause_action.toggle()
+
+    def sync_pause(self, paused: bool) -> None:
+        """状态机暂停变更回调：只刷新 UI，不回写状态机（防递归）。"""
+        # blockSignals 避免 setChecked 触发 toggled → 再次 set_paused 死循环
+        self._pause_action.blockSignals(True)
+        self._pause_action.setChecked(paused)
+        self._pause_action.setText("恢复" if paused else "暂停")
+        self._pause_action.blockSignals(False)

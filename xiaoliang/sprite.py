@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QImage, QPixmap, QTransform
 
 
 class AssetError(Exception):
@@ -84,12 +84,24 @@ class SpriteManager:
             self._frames[name] = pixmaps
             self._fps[name] = action["fps"]
 
-    def get_frame(self, action: str, elapsed_ms: int) -> QPixmap:
-        """返回动作在 elapsed_ms 时刻应显示的帧。未知动作抛 AssetError。"""
+    def get_frame(self, action: str, elapsed_ms: int, *,
+                  reverse: bool = False, mirror: bool = False) -> QPixmap:
+        """返回动作在 elapsed_ms 时刻应显示的帧。未知动作抛 AssetError。
+
+        reverse: 帧序倒放（向下爬墙复用向上爬素材，v0.2 spec §2.4）；
+        mirror: 水平镜像（左壁爬墙复用右壁素材）。
+        """
         if action not in self._frames:
             raise AssetError(f"未知动作: {action!r}（可用: {self.actions()}）")
         frames = self._frames[action]
-        return frames[frame_index(elapsed_ms, self._fps[action], len(frames))]
+        idx = frame_index(elapsed_ms, self._fps[action], len(frames))
+        if reverse:
+            idx = len(frames) - 1 - idx
+        pixmap = frames[idx]
+        if mirror:
+            # 镜像生成新 QPixmap，不改动缓存的原始帧
+            pixmap = pixmap.transformed(QTransform().scale(-1.0, 1.0))
+        return pixmap
 
     def frame_size(self) -> tuple[int, int]:
         """放大后的帧尺寸（宽, 高），逻辑像素。"""

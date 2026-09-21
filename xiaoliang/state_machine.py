@@ -75,7 +75,13 @@ class PetStateMachine:
                 self._timer -= dt
                 if self._timer <= 0:
                     self._start_idle()
-        # FALLING 分支在 Task 6 实现
+        elif self.state is State.FALLING:
+            self.vy += self.gravity * dt
+            self.y += self.vy * dt
+            if self.y >= self.floor_y:
+                self.y = float(self.floor_y)
+                self.vy = 0.0
+                self._start_idle()
 
     def drag_start(self) -> None:
         """被鼠标抓住。Task 6 测试覆盖，此处先提供接口。"""

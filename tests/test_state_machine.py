@@ -76,3 +76,66 @@ def test_walking_to_idle_after_timer():
     assert m.state is State.WALKING
     m.tick(0.6)  # 行走计时到
     assert m.state is State.IDLE
+
+
+def test_drag_start_from_idle():
+    m = make_machine()
+    m.drag_start()
+    assert m.state is State.DRAGGED
+
+
+def test_drag_move_updates_and_clamps():
+    m = make_machine()
+    m.drag_start()
+    m.drag_move(100, 200)
+    assert (m.x, m.y) == (100, 200)
+    m.drag_move(-50, 5000)
+    assert m.x == 0.0
+    assert m.y == 600 - 64
+
+
+def test_drag_move_ignored_when_not_dragged():
+    m = make_machine()
+    m.drag_move(100, 100)
+    assert (m.x, m.y) != (100, 100)
+
+
+def test_drag_end_starts_falling():
+    m = make_machine()
+    m.drag_start()
+    m.drag_move(100, 100)
+    m.drag_end()
+    assert m.state is State.FALLING
+
+
+def test_falling_lands_on_floor_then_idle():
+    m = make_machine(idle_range=(100.0, 100.0))  # 落地后长时间保持 IDLE 便于断言
+    m.drag_start()
+    m.drag_move(100, 100)
+    m.drag_end()
+    for _ in range(60):  # 2 秒 @30fps，足够从 y=100 落到 y=536
+        m.tick(1 / 30)
+    assert m.y == 600 - 64
+    assert m.state is State.IDLE
+
+
+def test_grab_while_falling():
+    m = make_machine()
+    m.drag_start()
+    m.drag_move(100, 100)
+    m.drag_end()
+    m.tick(1 / 30)
+    assert m.state is State.FALLING
+    m.drag_start()
+    assert m.state is State.DRAGGED
+
+
+def test_paused_tick_is_noop():
+    m = make_machine()
+    m.set_paused(True)
+    for _ in range(100):
+        m.tick(0.1)
+    assert m.state is State.IDLE
+    m.set_paused(False)
+    m.tick(1.1)
+    assert m.state is State.WALKING

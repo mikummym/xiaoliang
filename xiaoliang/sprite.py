@@ -4,6 +4,10 @@
 SpriteManager（Task 4 追加）依赖 Qt，需在 QApplication 下使用。
 """
 import json
+from pathlib import Path
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QImage, QPixmap
 
 
 class AssetError(Exception):
@@ -39,3 +43,57 @@ def frame_index(elapsed_ms: int, fps: float, frame_count: int) -> int:
     if frame_count <= 0:
         raise AssetError(f"frame_count 必须为正: {frame_count}")
     return int(max(0, elapsed_ms) * fps / 1000) % frame_count
+
+
+class SpriteManager:
+    """加载 sprite sheet 并按动作/时间返回当前帧（依赖 Qt，需先有 QApplication）。"""
+
+    def __init__(self, assets_dir: Path, scale: int = 2):
+        self._scale = scale
+        manifest_path = assets_dir / "manifest.json"
+        if not manifest_path.exists():
+            raise AssetError(f"找不到素材清单: {manifest_path}")
+        try:
+            raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise AssetError(f"manifest.json 不是合法 JSON: {exc}") from exc
+        self._manifest = parse_manifest(raw)
+        fw, fh = self._manifest["frame_size"]
+        self._frame_size = (fw, fh)
+        self._frames: dict[str, list[QPixmap]] = {}
+        self._fps: dict[str, float] = {}
+        for name, action in self._manifest["actions"].items():
+            path = assets_dir / action["file"]
+            if not path.exists():
+                raise AssetError(f"动作 {name!r} 的素材文件不存在: {path}")
+            sheet = QImage(str(path))
+            if sheet.isNull():
+                raise AssetError(f"无法读取图片: {path}")
+            need_w = fw * action["frames"]
+            if sheet.width() < need_w or sheet.height() < fh:
+                raise AssetError(
+                    f"{path} 尺寸不足: 需要至少 {need_w}x{fh}，"
+                    f"实际 {sheet.width()}x{sheet.height()}")
+            pixmaps = []
+            for i in range(action["frames"]):
+                frame = sheet.copy(i * fw, 0, fw, fh).scaled(
+                    fw * scale, fh * scale,
+                    Qt.AspectRatioMode.IgnoreAspectRatio,
+                    Qt.TransformationMode.FastTransformation)
+                pixmaps.append(QPixmap.fromImage(frame))
+            self._frames[name] = pixmaps
+            self._fps[name] = action["fps"]
+
+    def get_frame(self, action: str, elapsed_ms: int) -> QPixmap:
+        """返回动作在 elapsed_ms 时刻应显示的帧。未知动作抛 AssetError。"""
+        if action not in self._frames:
+            raise AssetError(f"未知动作: {action!r}（可用: {self.actions()}）")
+        frames = self._frames[action]
+        return frames[frame_index(elapsed_ms, self._fps[action], len(frames))]
+
+    def frame_size(self) -> tuple[int, int]:
+        """放大后的帧尺寸（宽, 高），逻辑像素。"""
+        return (self._frame_size[0] * self._scale, self._frame_size[1] * self._scale)
+
+    def actions(self) -> list[str]:
+        return sorted(self._frames)

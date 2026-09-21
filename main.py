@@ -7,7 +7,7 @@ from pathlib import Path
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from xiaoliang.config import default_config_path, load_config
+from xiaoliang.config import default_config_path, load_config, save_config
 from xiaoliang.pet_window import PetWindow
 from xiaoliang.sprite import AssetError, SpriteManager
 from xiaoliang.state_machine import Bounds, PetStateMachine
@@ -36,7 +36,16 @@ def main() -> int:
     logging.info("小凉启动")
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)  # 关窗口不退出，由托盘控制
-    cfg = load_config(default_config_path())
+    cfg_path = default_config_path()
+    cfg = load_config(cfg_path)
+    if not cfg_path.exists():
+        # 首次运行自动生成默认 config.json（规格 3.5）。只读目录（如某些
+        # 安装位置）写不进去也不应阻塞启动——记日志后用内存默认值继续。
+        try:
+            save_config(cfg, cfg_path)
+        except OSError as exc:
+            logging.warning("无法写入默认配置 %s（继续用默认值）: %s",
+                            cfg_path, exc)
     try:
         sprites = SpriteManager(assets_dir(), scale=int(cfg["scale"]))
     except AssetError as exc:
@@ -44,14 +53,15 @@ def main() -> int:
         QMessageBox.critical(None, "小凉启动失败", f"素材加载失败：\n{exc}")
         return 1
     area = QGuiApplication.primaryScreen().availableGeometry()
+    origin = area.topLeft()  # 工作区左上角（任务栏在顶/左时非零）
     fw, fh = sprites.frame_size()
     machine = PetStateMachine(
         Bounds(area.width(), area.height()), fw, fh,
         walk_speed=float(cfg["walk_speed"]),
         start_x=(area.width() - fw) / 2)
     machine.set_paused(bool(cfg["paused"]))
-    window = PetWindow(machine, sprites)
-    window.move(int(machine.x), int(machine.y))
+    window = PetWindow(machine, sprites, origin=origin)
+    window.move(origin.x() + int(machine.x), origin.y() + int(machine.y))
     window.show()
     tray = PetTray(machine, sprites.get_frame("idle", 0), app.quit)
     tray.show()

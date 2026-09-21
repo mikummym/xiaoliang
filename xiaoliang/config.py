@@ -13,6 +13,43 @@ DEFAULT_CONFIG = {
 }
 
 
+def _coerce_scale(v):
+    """scale 必须是正整数（bool 不算；整数值的 float 收敛为 int）。"""
+    if isinstance(v, bool):
+        raise ValueError("scale 不能是布尔值")
+    if isinstance(v, float) and v.is_integer():
+        v = int(v)
+    if not isinstance(v, int):
+        raise ValueError(f"scale 必须是整数，收到 {type(v).__name__}")
+    if v < 1:
+        raise ValueError(f"scale 必须 >= 1，收到 {v}")
+    return v
+
+
+def _coerce_walk_speed(v):
+    """walk_speed 必须是正数（bool 不算），统一收敛为 float。"""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        raise ValueError(f"walk_speed 必须是数字，收到 {type(v).__name__}")
+    v = float(v)
+    if v <= 0:
+        raise ValueError(f"walk_speed 必须 > 0，收到 {v}")
+    return v
+
+
+def _coerce_paused(v):
+    """paused 必须是布尔值。"""
+    if not isinstance(v, bool):
+        raise ValueError(f"paused 必须是布尔值，收到 {type(v).__name__}")
+    return v
+
+
+_COERCE = {
+    "scale": _coerce_scale,
+    "walk_speed": _coerce_walk_speed,
+    "paused": _coerce_paused,
+}
+
+
 def default_config_path() -> Path:
     """config.json 位置：打包后与 exe 同目录，源码运行时在项目根目录。"""
     if getattr(sys, "frozen", False):
@@ -21,7 +58,11 @@ def default_config_path() -> Path:
 
 
 def load_config(path: Path) -> dict:
-    """加载配置；文件不存在/损坏时返回默认配置，只保留已知键。"""
+    """加载配置；文件不存在/损坏时返回默认配置，只保留已知键。
+
+    单个键的值类型/取值非法（如 "scale": "3x"）时，该键回退默认值并记
+    警告（规格 §5：损坏配置回退默认），其余合法键照常生效。
+    """
     cfg = dict(DEFAULT_CONFIG)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -34,8 +75,13 @@ def load_config(path: Path) -> dict:
         logger.warning("配置文件 %s 不是 JSON 对象，使用默认配置", path)
         return cfg
     for key in DEFAULT_CONFIG:
-        if key in data:
-            cfg[key] = data[key]
+        if key not in data:
+            continue
+        try:
+            cfg[key] = _COERCE[key](data[key])
+        except (ValueError, TypeError) as exc:
+            logger.warning("配置项 %s=%r 非法，使用默认值 %r: %s",
+                           key, data[key], DEFAULT_CONFIG[key], exc)
     return cfg
 
 

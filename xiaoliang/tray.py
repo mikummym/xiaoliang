@@ -11,7 +11,9 @@ class PetTray(QSystemTrayIcon):
         self.machine = machine
         self.setToolTip("小凉")
 
-        self._pause_action = QAction("暂停", self)
+        # 初始文字与勾选状态都来自 machine.paused（配置 paused=true 启动时
+        # 菜单应直接显示"恢复"）
+        self._pause_action = QAction("恢复" if machine.paused else "暂停", self)
         self._pause_action.setCheckable(True)
         self._pause_action.setChecked(machine.paused)
         self._pause_action.toggled.connect(self._on_toggle_pause)
@@ -32,5 +34,7 @@ class PetTray(QSystemTrayIcon):
         self._pause_action.setText("恢复" if checked else "暂停")
 
     def _on_activated(self, reason) -> None:
-        if reason == QSystemTrayIcon.ActivationReason.Trigger:  # 单击/双击
+        # 规格 3.4：双击托盘图标 = 暂停/恢复（单击不触发）。双击时系统只发
+        # 一次 DoubleClick，故切换恰好一次。
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
             self._pause_action.toggle()

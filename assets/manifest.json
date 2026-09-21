@@ -1,0 +1,33 @@
+{
+  "frame_size": [
+    64,
+    64
+  ],
+  "actions": {
+    "idle": {
+      "file": "idle.png",
+      "frames": 4,
+      "fps": 3
+    },
+    "walk_right": {
+      "file": "walk_right.png",
+      "frames": 6,
+      "fps": 8
+    },
+    "dragged": {
+      "file": "dragged.png",
+      "frames": 2,
+      "fps": 6
+    },
+    "falling": {
+      "file": "falling.png",
+      "frames": 2,
+      "fps": 6
+    },
+    "walk_left": {
+      "file": "walk_left.png",
+      "frames": 6,
+      "fps": 8
+    }
+  }
+}

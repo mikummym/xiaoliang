@@ -4,5 +4,6 @@ __pycache__/
 build/
 dist/
 config.json
+status.json
 *.log
 *.spec

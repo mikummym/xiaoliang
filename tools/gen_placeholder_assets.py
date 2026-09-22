@@ -23,6 +23,8 @@ SKIN = (245, 220, 200, 255)   # 皮肤
 CLOTH = (60, 64, 80, 255)     # 深色衣服
 EYE = (40, 40, 50, 255)       # 眼睛/鞋
 BOWL = (210, 210, 220, 255)   # 喂食用的碗
+LEDGE = (150, 115, 80, 255)       # 顶边坐姿的搁板板面（暖木色）
+LEDGE_DARK = (100, 72, 48, 255)   # 搁板板底暗边（做出板的厚度）
 
 
 def draw_pet(d: ImageDraw.ImageDraw, *, leg_offset: int = 0,
@@ -113,31 +115,44 @@ def draw_climbing(d: ImageDraw.ImageDraw, *, phase: int = 0) -> None:
 
 
 def draw_sitting_top(d: ImageDraw.ImageDraw, *, leg_swing: int = 0) -> None:
-    """顶边坐姿（侧面朝右）：坐在屏幕顶边上，大腿水平前伸、小腿悬空交替晃荡。
+    """顶边坐姿（侧面朝右）：坐在横贯画面的搁板上，大腿水平前伸、小腿悬空交替晃荡。
 
     与站姿的剪影区别（验收反馈：旧画法腿垂直下垂，远看像站着）：
     大腿水平 + 小腿垂在膝下 + 手臂搭向腿面，一眼可读为"坐"。
-    视角与 climbing 一致（侧面朝右）——爬上右壁到顶后顺势坐下。
+    搁板：修复"顶边坐着悬空、没有支撑物"——渲染层会把坐姿窗口向墙外平移，
+    搁板横贯整帧宽 0..63，伸出屏幕边缘的一端被自然裁剪，读作"固定在侧壁上
+    探出来的小搁板"。板面从 y35 起，正好托住底边在 y34 的大腿。
+    贴边可见带约束（评审 major 修复）：角色必须收在第 0..42 可见列内——
+    贴边偏移会把帧内第 43..63 列推出屏幕（右壁裁掉 43..63，左壁镜像后裁掉
+    原帧 0..20），肢体画进这些列会被屏幕边缘竖直切断。所以除搁板外所有
+    绘制坐标整体左移 6 列（角色含摆幅占 17..42），只有搁板横贯整帧、
+    端头被屏幕边缘裁剪。
+    遮挡关系（靠绘制顺序实现）：远侧腿先画 → 搁板盖住其中段（读作腿从板后
+    垂过、鞋露在板下）→ 大腿/躯干画在板上 → 近侧腿最后画，垂在板前。
     leg_swing 取 1/0/-1：近/远两条腿的小腿与鞋绕膝盖反向摆动。
     """
     ls = leg_swing
-    # 远侧腿（先画，腿根稍后被大腿块压住）
-    d.rectangle([34, 34, 39, 42], fill=SKIN)            # 远小腿上段
-    d.rectangle([34 - ls, 42, 39 - ls, 48], fill=SKIN)  # 远小腿下段（随 ls 摆）
-    d.rectangle([32 - ls, 48, 41 - ls, 52], fill=EYE)   # 远侧鞋
-    # 躯干与头（坐姿：躯干比站姿短，整体压低）
-    d.rectangle([27, 16, 39, 30], fill=CLOTH)           # 躯干
-    d.rectangle([28, 4, 42, 16], fill=HAIR)             # 头颅
-    d.rectangle([33, 10, 42, 16], fill=SKIN)            # 脸（侧面朝右）
-    d.point((39, 12), fill=EYE)                         # 眼睛（侧面只见一只）
-    # 大腿：从臀（左端）到膝（右端）水平前伸——坐姿的关键剪影
-    d.rectangle([23, 28, 45, 34], fill=CLOTH)
-    # 近侧腿（垂在膝下，与远侧腿反向摆）
-    d.rectangle([40, 34, 45, 43], fill=SKIN)            # 近小腿上段
-    d.rectangle([40 + ls, 43, 45 + ls, 50], fill=SKIN)  # 近小腿下段
-    d.rectangle([38 + ls, 50, 47 + ls, 54], fill=EYE)   # 近侧鞋
+    # 远侧腿（最先画：中段稍后被搁板遮住，只露出膝上的连接和板下的鞋）
+    d.rectangle([28, 34, 33, 42], fill=SKIN)            # 远小腿上段
+    d.rectangle([28 - ls, 42, 33 - ls, 48], fill=SKIN)  # 远小腿下段（随 ls 摆）
+    d.rectangle([26 - ls, 48, 35 - ls, 52], fill=EYE)   # 远侧鞋
+    # 搁板：唯一横贯整帧的元素（0..63），板面 + 暗底边做出厚度；
+    # 盖住远侧腿中段形成前后遮挡，端头伸出屏幕边缘被裁读作固定在侧壁上
+    d.rectangle([0, 35, 63, 38], fill=LEDGE)            # 板面（托住大腿）
+    d.rectangle([0, 39, 63, 40], fill=LEDGE_DARK)       # 板底暗边（厚度）
+    # 大腿：从臀（左端）到膝（右端）水平前伸——坐姿的关键剪影，底边贴住板面
+    d.rectangle([17, 28, 39, 34], fill=CLOTH)
+    # 躯干与头（坐姿：躯干比站姿短，整体压低；画在大腿之后压住腿根）
+    d.rectangle([21, 16, 33, 30], fill=CLOTH)           # 躯干
+    d.rectangle([22, 4, 36, 16], fill=HAIR)             # 头颅
+    d.rectangle([27, 10, 36, 16], fill=SKIN)            # 脸（侧面朝右）
+    d.point((33, 12), fill=EYE)                         # 眼睛（侧面只见一只）
+    # 近侧腿（最后画：垂在搁板前，与远侧腿反向摆，前后层次一目了然）
+    d.rectangle([34, 34, 39, 43], fill=SKIN)            # 近小腿上段
+    d.rectangle([34 + ls, 43, 39 + ls, 50], fill=SKIN)  # 近小腿下段
+    d.rectangle([32 + ls, 50, 41 + ls, 54], fill=EYE)   # 近侧鞋
     # 手臂：从肩垂下搭在大腿上
-    d.rectangle([34, 20, 38, 29], fill=SKIN)
+    d.rectangle([28, 20, 32, 29], fill=SKIN)
 
 
 def make_sheet(frames_params: list[dict], out_name: str, draw=draw_pet) -> int:

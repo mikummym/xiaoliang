@@ -108,6 +108,23 @@ def load_config(path: Path) -> dict:
     return cfg
 
 
+def needs_migration(path: Path) -> bool:
+    """检测配置文件是否为缺少新键的旧版本（如 v0.1 的文件没有 sleep_start/sleep_end）。
+
+    只有"文件存在、是合法 JSON 对象、且缺 DEFAULT_CONFIG 的键"才算需要迁移，
+    main.py 据此把补全后的配置回写，方便用户发现并编辑新配置项。
+    文件不存在（走生成默认配置的路径）或损坏/非对象（load_config 已回退
+    默认值）时返回 False——这两种情况不应再动用户的文件。
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    return not set(DEFAULT_CONFIG) <= set(data)
+
+
 def save_config(cfg: dict, path: Path) -> None:
     """把配置写为 UTF-8 JSON。"""
     path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")

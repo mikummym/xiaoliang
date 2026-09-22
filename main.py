@@ -8,7 +8,8 @@ from PySide6.QtCore import QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from xiaoliang.config import default_config_path, load_config, save_config
+from xiaoliang.config import (default_config_path, load_config,
+                              needs_migration, save_config)
 from xiaoliang.pet_window import PetWindow
 from xiaoliang.sprite import AssetError, SpriteManager
 from xiaoliang.state_machine import Bounds, PetStateMachine
@@ -63,6 +64,16 @@ def main() -> int:
             save_config(cfg, cfg_path)
         except OSError as exc:
             logging.warning("无法写入默认配置 %s（继续用默认值）: %s",
+                            cfg_path, exc)
+    elif needs_migration(cfg_path):
+        # 旧版本配置文件缺新键（如 v0.1 的 3 键文件缺 sleep_start/sleep_end）：
+        # 回写补全后的配置，让用户能发现并直接编辑新配置项。cfg 此时已被
+        # load_config 补齐默认值，用户原有合法值原样保留。
+        try:
+            save_config(cfg, cfg_path)
+            logging.info("配置文件已补全缺失字段: %s", cfg_path)
+        except OSError as exc:
+            logging.warning("配置文件补全失败 %s（继续用内存值）: %s",
                             cfg_path, exc)
     try:
         sprites = SpriteManager(assets_dir(), scale=int(cfg["scale"]))

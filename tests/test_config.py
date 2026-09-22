@@ -2,7 +2,8 @@ import json
 
 import pytest
 
-from xiaoliang.config import DEFAULT_CONFIG, load_config, save_config
+from xiaoliang.config import (DEFAULT_CONFIG, load_config, needs_migration,
+                              save_config)
 
 
 def test_missing_file_returns_defaults(tmp_path):
@@ -133,3 +134,56 @@ def test_one_sleep_key_invalid_only_that_key_falls_back(tmp_path):
     cfg = load_config(p)
     assert cfg["sleep_start"] == "22:00"   # 合法键保留
     assert cfg["sleep_end"] == "07:00"     # 非法键回退
+
+
+# ── v0.2 验收补充：旧配置文件缺键检测（main.py 据此自动回写补全） ──────
+
+def test_needs_migration_missing_file(tmp_path):
+    """文件不存在走"生成默认配置"路径，不属于缺键迁移。"""
+    assert needs_migration(tmp_path / "absent.json") is False
+
+
+def test_needs_migration_old_v01_file(tmp_path):
+    # v0.1 的旧配置只有 3 键，缺 v0.2 新增的 sleep_start/sleep_end → 需补全
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"scale": 2, "walk_speed": 60.0, "paused": False}),
+                 encoding="utf-8")
+    assert needs_migration(p) is True
+
+
+def test_needs_migration_complete_file(tmp_path):
+    p = tmp_path / "config.json"
+    save_config(DEFAULT_CONFIG, p)
+    assert needs_migration(p) is False
+
+
+def test_needs_migration_corrupt_or_non_dict(tmp_path):
+    # 损坏/非对象由 load_config 回退默认已处理，迁移不应再去动用户文件
+    p = tmp_path / "config.json"
+    p.write_text("{not valid json", encoding="utf-8")
+    assert needs_migration(p) is False
+    p.write_text("[1, 2, 3]", encoding="utf-8")
+    assert needs_migration(p) is False
+
+
+def test_needs_migration_extra_unknown_key_only(tmp_path):
+    # 键齐全只是多了未知键 → 不回写（不无谓改动用户文件）
+    p = tmp_path / "config.json"
+    data = dict(DEFAULT_CONFIG)
+    data["unknown_key"] = 1
+    p.write_text(json.dumps(data), encoding="utf-8")
+    assert needs_migration(p) is False
+
+
+def test_migration_preserves_user_values(tmp_path):
+    """补全回写必须保留用户已有合法值，只补缺失键（模拟 main.py 的迁移流程）。"""
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"scale": 3, "walk_speed": 120.0, "paused": True}),
+                 encoding="utf-8")
+    assert needs_migration(p) is True
+    cfg = load_config(p)      # 加载：缺失键已在内存补默认值
+    save_config(cfg, p)       # 回写：文件变成完整 5 键
+    data = json.loads(p.read_text(encoding="utf-8"))
+    assert data == {"scale": 3, "walk_speed": 120.0, "paused": True,
+                    "sleep_start": "23:00", "sleep_end": "07:00"}
+    assert needs_migration(p) is False   # 回写后不再需要迁移

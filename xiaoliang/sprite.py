@@ -84,6 +84,15 @@ class SpriteManager:
             self._frames[name] = pixmaps
             self._fps[name] = action["fps"]
 
+    @property
+    def scale(self) -> int:
+        """放大倍数（只读）：渲染层按逻辑像素换算偏移时使用。
+
+        pet_window 的贴边补偿等逻辑以帧内"逻辑列"为单位，需要乘以
+        scale 才能得到窗口实际使用的物理像素偏移。
+        """
+        return self._scale
+
     def get_frame(self, action: str, elapsed_ms: int, *,
                   reverse: bool = False, mirror: bool = False) -> QPixmap:
         """返回动作在 elapsed_ms 时刻应显示的帧。未知动作抛 AssetError。

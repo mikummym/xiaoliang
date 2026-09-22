@@ -9,8 +9,11 @@ v0.2 新增（spec §2.3）：
 - 右键菜单：喂食（吃撑置灰）/ 状态展示 / 暂停·恢复 / 退出
 - 悬停 tooltip：每秒刷新"心情 😊N · 饱腹 🍚N · 状态中文"
 - 攀爬渲染：爬下 = 帧序倒放，左壁 = 水平镜像（get_frame kwargs）
+- 坐顶姿势：面向墙 / 背靠墙两种随机姿势（背靠墙水平镜像复用同一组
+  sitting_top 帧，不新增任何素材）
 """
 import math
+import random
 import time
 
 from PySide6.QtCore import QElapsedTimer, QPoint, Qt, QTimer
@@ -31,6 +34,11 @@ POKE_MAX_PX = 5.0
 # 悬空在离屏幕边缘 21 逻辑像素处。把窗口向墙外推出这段空白（×scale、
 # ×climb_wall 方向），手就正好搭在屏幕边缘上。
 CLING_MARGIN_LOGICAL = 21
+
+# 背靠墙坐姿的贴边推出量（逻辑像素）：sitting_top 帧角色墨水占第 17..42
+# 列，水平镜像后"后背"（原第 17 列）落到第 46 列，要让后背贴住屏幕边缘
+# 需推出 63-46=17 列；面向墙坐姿与攀爬仍用 CLING_MARGIN_LOGICAL=21。
+CLING_MARGIN_BACK = 17
 
 # 状态 → 动作名（WALKING 按方向细分、CLIMBING 的倒放/镜像单独处理）
 STATE_ACTION = {
@@ -84,9 +92,16 @@ class PetWindow(QWidget):
         self._press_ts = 0.0
         self._press_pos: QPoint | None = None
         self._drag_moved = False
-        # 贴边偏移保持标志：在壁上被戳/跳下的瞬间 machine.x 仍吸附在墙边，
-        # 偏移若立即归零窗口会横跳 21*scale 物理像素，故用此标志跨帧保持
-        self._wall_cling = False
+        # 贴边推出列数（逻辑像素，0 = 不贴边）：用数值而非布尔，因为顶边
+        # 两种坐姿推出量不同（面向墙 21 / 背靠墙 17），且在壁上被戳/跳下
+        # 的瞬间 machine.x 仍吸附在墙边，必须跨帧沿用同一推出量，立即归零
+        # 窗口会横跳 K*scale 物理像素
+        self._cling_margin = 0
+        # 本次坐顶的姿势：True=面向墙、False=背靠墙，进入 SITTING_TOP 的
+        # 瞬间随机掷一次，坐姿期间保持不变
+        self._sit_facing_wall = True
+        # 是否已处于坐姿：检测"进入坐姿的瞬间"（上升沿），保证只掷一次
+        self._in_sitting = False
         # tooltip 刷新计时（毫秒累计，每满 1000 刷一次）
         self._tooltip_ms = 0
         self._refresh_tooltip()
@@ -149,38 +164,60 @@ class PetWindow(QWidget):
             self._last_action = action
         else:
             self._anim_ms += int(dt * 1000)
-        # 攀爬渲染：爬下倒放帧序；左壁水平镜像——坐姿同样镜像，因为
-        # SITTING_TOP 只会从 CLIMBING 到顶进入，climb_wall 在坐姿下仍然
-        # 有效，不镜像的话左右两侧坐上去姿势会朝错方向
+        # 攀爬渲染：爬下倒放帧序；镜像规则见下。坐姿的 climb_wall 依然
+        # 有效——SITTING_TOP 只会从 CLIMBING 到顶进入，记录的是哪面墙
         climbing = self.machine.state is State.CLIMBING
         sitting = self.machine.state is State.SITTING_TOP
+        # 进入坐姿的瞬间掷一次姿势（面向墙/背靠墙 50/50），坐姿期间保持
+        if sitting and not self._in_sitting:
+            self._sit_facing_wall = random.random() < 0.5
+            self._in_sitting = True
+        elif not sitting:
+            self._in_sitting = False
+        # 镜像规则（真值表）：
+        # - 攀爬：左壁（climb_wall<0）镜像，右壁原样——面向墙
+        # - 坐姿·面向墙：与攀爬同向，左壁才镜像（脸/鞋尖朝墙）
+        # - 坐姿·背靠墙：与攀爬反向，右壁才镜像——镜像后后背落在第 46 列，
+        #   推出 17 列（CLING_MARGIN_BACK）后背正好贴住屏幕右缘；左壁则
+        #   不镜像，原帧后背就在第 17 列，同样推出 17 列贴住屏幕左缘
+        if climbing:
+            mirror = self.machine.climb_wall < 0
+        elif sitting:
+            mirror = (self._sit_facing_wall == (self.machine.climb_wall < 0))
+        else:
+            mirror = False
         self._pixmap = self.sprites.get_frame(
             action, self._anim_ms,
             reverse=climbing and self.machine.climb_direction == "down",
-            mirror=(climbing or sitting) and self.machine.climb_wall < 0)
+            mirror=mirror)
         # 攀爬/坐姿贴屏幕边缘：把窗口向墙外推出素材墙侧的空白列
-        #（CLING_MARGIN_LOGICAL 为逻辑像素，×scale 换算、×climb_wall 定向：
-        # 右壁推出屏幕右缘、左壁推出左缘），手就正好搭在屏幕边缘上。
-        # 纯渲染层偏移，不改状态机坐标；三段逻辑决定偏移是否生效：
-        if self.machine.state in (State.CLIMBING, State.SITTING_TOP):
-            # 贴壁状态：开启并保持偏移
-            self._wall_cling = True
+        #（_cling_margin 为逻辑像素，×scale 换算、×climb_wall 定向：
+        # 右壁推出屏幕右缘、左壁推出左缘），手/鞋尖/后背正好搭在屏幕边缘。
+        # 纯渲染层偏移，不改状态机坐标；三段逻辑决定推出列数：
+        if climbing:
+            # 攀爬：墙侧第 43..63 共 21 列空白，推出 21 列手搭屏幕边缘
+            self._cling_margin = CLING_MARGIN_LOGICAL
+        elif sitting:
+            # 坐顶按姿势取推出量：面向墙 = 鞋尖/脸在第 42 列贴边（21），
+            # 背靠墙 = 镜像帧后背在第 46 列贴边（17）。爬→坐切换若掷中
+            # 背靠墙，推出量 21→17 造成的 8 物理像素位移与换姿势同帧
+            # 发生，被姿势切换本身掩盖，看起来不突兀
+            self._cling_margin = (CLING_MARGIN_LOGICAL if self._sit_facing_wall
+                                  else CLING_MARGIN_BACK)
         elif self.machine.state in (State.POKE_REACT, State.FALLING):
             # 在壁上被戳（POKE_REACT，播完自然回到贴壁状态）或坐够跳下
-            #（FALLING）的瞬间 machine.x 仍吸附在墙边，偏移必须沿用不能
-            # 归零，否则窗口一帧横跳 21*scale；FALLING 落地后进
-            # IDLE/SLEEPING，由下一分支清除
+            #（FALLING）的瞬间 machine.x 仍吸附在墙边，推出量必须沿用
+            # 进入反应/下落前的值不能归零，否则窗口一帧横跳 K*scale；
+            # FALLING 落地后进 IDLE/SLEEPING，由下一分支清除
             pass
         else:
-            # IDLE/WALKING/DRAGGED/SLEEPING/EATING/WOKEN：不贴边，偏移归零
-            self._wall_cling = False
-        # POKE_REACT/FALLING 素材的角色占帧内第 22..42 逻辑列，贴边状态
-        # 下完全落在可见带内（右壁可见 0..42、左壁镜像可见原帧 21..63），
-        # 保持偏移不会把角色裁掉，无需额外处理
-        cling_off = 0
-        if self._wall_cling:
-            cling_off = (CLING_MARGIN_LOGICAL * self.sprites.scale
-                         * self.machine.climb_wall)
+            # IDLE/WALKING/DRAGGED/SLEEPING/EATING/WOKEN：不贴边，推出量归零
+            self._cling_margin = 0
+        # POKE_REACT/FALLING 素材的角色占帧内第 22..42 逻辑列：推出量为
+        # 21 或 17 时，两壁可见带（右壁 0..63-K、左壁镜像前 K..63）都完整
+        # 覆盖 22..42，保持偏移不会把角色裁掉，无需额外处理
+        cling_off = (self._cling_margin * self.sprites.scale
+                     * self.machine.climb_wall)
         self.move(self._to_global(self.machine.x, self.machine.y)
                   + QPoint(cling_off, 0))
         # tooltip 每秒刷新：数值随时间衰减，刷太快没有意义

@@ -113,21 +113,31 @@ def draw_climbing(d: ImageDraw.ImageDraw, *, phase: int = 0) -> None:
 
 
 def draw_sitting_top(d: ImageDraw.ImageDraw, *, leg_swing: int = 0) -> None:
-    """顶边坐姿：手撑身侧、双腿悬空晃荡（leg_swing 取 1/0/-1 循环）。"""
-    d.rectangle([24, 12, 40, 24], fill=HAIR)     # 头顶
-    d.rectangle([22, 16, 25, 32], fill=HAIR)     # 左侧垂发
-    d.rectangle([39, 16, 42, 32], fill=HAIR)     # 右侧垂发
-    d.rectangle([26, 20, 38, 30], fill=SKIN)     # 脸
-    d.point((29, 25), fill=EYE)                  # 左眼
-    d.point((35, 25), fill=EYE)                  # 右眼
-    d.rectangle([26, 31, 38, 46], fill=CLOTH)    # 躯干（坐姿略长）
-    d.rectangle([22, 38, 26, 46], fill=SKIN)     # 左臂撑在身侧
-    d.rectangle([38, 38, 42, 46], fill=SKIN)     # 右臂撑在身侧
+    """顶边坐姿（侧面朝右）：坐在屏幕顶边上，大腿水平前伸、小腿悬空交替晃荡。
+
+    与站姿的剪影区别（验收反馈：旧画法腿垂直下垂，远看像站着）：
+    大腿水平 + 小腿垂在膝下 + 手臂搭向腿面，一眼可读为"坐"。
+    视角与 climbing 一致（侧面朝右）——爬上右壁到顶后顺势坐下。
+    leg_swing 取 1/0/-1：近/远两条腿的小腿与鞋绕膝盖反向摆动。
+    """
     ls = leg_swing
-    d.rectangle([27 + ls, 46, 31 + ls, 56], fill=CLOTH)   # 悬空腿 1
-    d.rectangle([33 - ls, 46, 37 - ls, 56], fill=CLOTH)   # 悬空腿 2
-    d.rectangle([26 + ls, 55, 32 + ls, 58], fill=EYE)     # 鞋 1
-    d.rectangle([32 - ls, 55, 38 - ls, 58], fill=EYE)     # 鞋 2
+    # 远侧腿（先画，腿根稍后被大腿块压住）
+    d.rectangle([34, 34, 39, 42], fill=SKIN)            # 远小腿上段
+    d.rectangle([34 - ls, 42, 39 - ls, 48], fill=SKIN)  # 远小腿下段（随 ls 摆）
+    d.rectangle([32 - ls, 48, 41 - ls, 52], fill=EYE)   # 远侧鞋
+    # 躯干与头（坐姿：躯干比站姿短，整体压低）
+    d.rectangle([27, 16, 39, 30], fill=CLOTH)           # 躯干
+    d.rectangle([28, 4, 42, 16], fill=HAIR)             # 头颅
+    d.rectangle([33, 10, 42, 16], fill=SKIN)            # 脸（侧面朝右）
+    d.point((39, 12), fill=EYE)                         # 眼睛（侧面只见一只）
+    # 大腿：从臀（左端）到膝（右端）水平前伸——坐姿的关键剪影
+    d.rectangle([23, 28, 45, 34], fill=CLOTH)
+    # 近侧腿（垂在膝下，与远侧腿反向摆）
+    d.rectangle([40, 34, 45, 43], fill=SKIN)            # 近小腿上段
+    d.rectangle([40 + ls, 43, 45 + ls, 50], fill=SKIN)  # 近小腿下段
+    d.rectangle([38 + ls, 50, 47 + ls, 54], fill=EYE)   # 近侧鞋
+    # 手臂：从肩垂下搭在大腿上
+    d.rectangle([34, 20, 38, 29], fill=SKIN)
 
 
 def make_sheet(frames_params: list[dict], out_name: str, draw=draw_pet) -> int:

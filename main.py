@@ -11,6 +11,9 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from xiaoliang.config import (default_config_path, load_config,
                               needs_migration, save_config)
 from xiaoliang.pet_window import PetWindow
+from xiaoliang.reminder import ReminderLogic, ReminderService
+from xiaoliang.screen_info import wrap_and_cling_edges
+from xiaoliang.sound import SoundEngine
 from xiaoliang.sprite import AssetError, SpriteManager
 from xiaoliang.state_machine import Bounds, PetStateMachine
 from xiaoliang.status import PetStatus
@@ -84,6 +87,8 @@ def main() -> int:
     area = QGuiApplication.primaryScreen().availableGeometry()
     origin = area.topLeft()  # 工作区左上角（任务栏在顶/左时非零）
     fw, fh = sprites.frame_size()
+    # ── v0.3：屏幕布局 → 可穿越边缘（无邻屏侧）与贴边 mask 边缘（有邻屏侧）
+    wrap_edges, cling_mask_edges = wrap_and_cling_edges()
     machine = PetStateMachine(
         Bounds(area.width(), area.height()), fw, fh,
         walk_speed=float(cfg["walk_speed"]),
@@ -91,13 +96,65 @@ def main() -> int:
         status=status,
         sleep_start=cfg["sleep_start"],
         sleep_end=cfg["sleep_end"],
+        wrap_chance=float(cfg["wrap_chance"]),
+        wrap_edges=wrap_edges,
         on_status_change=save_status)   # 戳/喂食数值变化后即时落盘
     machine.set_paused(bool(cfg["paused"]))
-    window = PetWindow(machine, sprites, origin=origin, on_quit=app.quit)
+
+    # ── v0.3：声音引擎（初始化失败自动降级静默，不影响启动） ──
+    sound = SoundEngine(cfg["sound"],
+                        sounds_dir=assets_dir() / "sounds" / "poke")
+
+    window = PetWindow(machine, sprites, origin=origin, on_quit=app.quit,
+                       sound=sound, mask_edges=cling_mask_edges)
     window.move(origin.x() + int(machine.x), origin.y() + int(machine.y))
     window.show()
-    tray = PetTray(machine, sprites.get_frame("idle", 0), app.quit)
+
+    def save_cfg() -> None:
+        """配置落盘（托盘静音开关等运行时变更）；失败只记日志。
+
+        容错模式参照启动期配置写入（上文 cfg_path.exists() 分支）：
+        OSError 只记日志不崩——运行时写不进盘不应拖垮桌宠主循环。
+        """
+        try:
+            save_config(cfg, cfg_path)
+        except OSError as exc:
+            logging.warning("配置保存失败: %s", exc)
+
+    tray = PetTray(machine, sprites.get_frame("idle", 0), app.quit,
+                   sound_cfg=cfg["sound"], on_cfg_changed=save_cfg)
     tray.show()
+
+    # ── v0.3：提醒服务（久坐 + 整点）。免打扰 = 暂停或小凉睡觉时段；
+    # 事件 → 动画（remind 被拒拉倒，语音照念）+ TTS ──
+    logic = ReminderLogic(
+        sit_minutes=float(cfg["remind"]["sit_minutes"]),
+        idle_threshold_minutes=float(cfg["remind"]["idle_threshold_minutes"]),
+        # 免打扰闸（spec §3.5）：暂停时整体冻结、睡眠时段不打扰；
+        # machine.in_sleep_window() 是 v0.2 既有公开方法，闭包现读即生效
+        dnd=lambda: machine.paused or machine.in_sleep_window())
+
+    def on_reminder(kind: str, text: str) -> None:
+        # remind() 被拒返回 False 拉倒：提醒的使命是传达信息（spec §1.5），
+        # 语音照念不以 remind() 返回值为条件——睡觉/被拎着时动画放不出，
+        # 但语音照样把话说出来
+        machine.remind()
+        sound.speak(text,
+                    "sit_reminder" if kind == "sit" else "hourly_chime")
+
+    reminders = ReminderService(logic, on_reminder)
+    reminders.start()
+
+    # ── v0.3：显示器热插拔 → 刷新穿越/mask 边缘（spec §4.1） ──
+    def refresh_screens(*_args) -> None:
+        wrap_now, mask_now = wrap_and_cling_edges()
+        # set_wrap_edges/set_mask_edges 不容 None（会 TypeError），故传
+        # wrap_and_cling_edges() 返回的 set（可能为空集，但绝非 None）
+        machine.set_wrap_edges(wrap_now)
+        window.set_mask_edges(mask_now)
+
+    app.screenAdded.connect(refresh_screens)
+    app.screenRemoved.connect(refresh_screens)
 
     # 定时保存数值（每 60 秒）+ 退出时兜底保存
     save_timer = QTimer()

@@ -13,6 +13,19 @@ DEFAULT_CONFIG = {
     "paused": False,
     "sleep_start": "23:00",   # 睡眠时段起点（含），HH:MM 24 小时制
     "sleep_end": "07:00",     # 睡眠时段终点（不含）；start>end 表示跨午夜
+    "wrap_chance": 0.08,      # v0.3：IDLE 出门时触发屏幕穿越的概率
+    # v0.3：声音开关。muted=总开关（托盘菜单同步），其余为分类开关（手改）
+    "sound": {
+        "muted": False,
+        "poke_sfx": True,
+        "sit_reminder": True,
+        "hourly_chime": True,
+    },
+    # v0.3：提醒服务参数（单位分钟，正数）
+    "remind": {
+        "sit_minutes": 45,
+        "idle_threshold_minutes": 5,
+    },
 }
 
 
@@ -57,12 +70,53 @@ def _coerce_hhmm(v):
     return v
 
 
+def _coerce_wrap_chance(v):
+    """wrap_chance 必须是 [0,1] 的数字（bool 不算），统一收敛为 float。"""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        raise ValueError(f"wrap_chance 必须是数字，收到 {type(v).__name__}")
+    v = float(v)
+    if not 0.0 <= v <= 1.0:
+        raise ValueError(f"wrap_chance 必须在 [0,1]，收到 {v}")
+    return v
+
+
+def _make_sub_coercer(defaults: dict):
+    """工厂：生成嵌套配置段（sound/remind）的校验器。
+
+    语义：段必须是 JSON 对象；缺的子键补默认值；任何子键类型/取值非法
+    → 抛 ValueError，由 load_config 的按键回退逻辑把**整段**回退默认
+    （段内一半合法一半非法的"半份配置"比整段默认更容易让人困惑）。
+    """
+    def coerce(v):
+        if not isinstance(v, dict):
+            raise ValueError(f"必须是 JSON 对象，收到 {type(v).__name__}")
+        out = dict(defaults)
+        for key, dval in defaults.items():
+            if key not in v:
+                continue                      # 缺子键 → 用默认值
+            val = v[key]
+            if isinstance(dval, bool):
+                if not isinstance(val, bool):
+                    raise ValueError(f"子键 {key} 必须是布尔值，收到 {val!r}")
+            else:                             # 数值子键：正数，收敛 float
+                if (isinstance(val, bool)
+                        or not isinstance(val, (int, float)) or val <= 0):
+                    raise ValueError(f"子键 {key} 必须是正数，收到 {val!r}")
+                val = float(val)
+            out[key] = val
+        return out
+    return coerce
+
+
 _COERCE = {
     "scale": _coerce_scale,
     "walk_speed": _coerce_walk_speed,
     "paused": _coerce_paused,
     "sleep_start": _coerce_hhmm,
     "sleep_end": _coerce_hhmm,
+    "wrap_chance": _coerce_wrap_chance,
+    "sound": _make_sub_coercer(DEFAULT_CONFIG["sound"]),
+    "remind": _make_sub_coercer(DEFAULT_CONFIG["remind"]),
 }
 
 
@@ -79,7 +133,7 @@ def load_config(path: Path) -> dict:
     单个键的值类型/取值非法（如 "scale": "3x"）时，该键回退默认值并记
     警告（规格 §5：损坏配置回退默认），其余合法键照常生效。
     """
-    cfg = dict(DEFAULT_CONFIG)
+    cfg = json.loads(json.dumps(DEFAULT_CONFIG))  # 深拷贝：嵌套 dict（sound/remind）绝不能与模块级默认值共享引用，否则运行时改 cfg["sound"]["muted"] 会污染默认值
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -108,13 +162,24 @@ def load_config(path: Path) -> dict:
     return cfg
 
 
-def needs_migration(path: Path) -> bool:
-    """检测配置文件是否为缺少新键的旧版本（如 v0.1 的文件没有 sleep_start/sleep_end）。
+def _has_missing_keys(defaults: dict, data: dict) -> bool:
+    """递归检查 data 是否缺 defaults 的任何键（含嵌套段的子键）。"""
+    for key, dval in defaults.items():
+        if key not in data:
+            return True
+        if isinstance(dval, dict) and isinstance(data[key], dict):
+            if _has_missing_keys(dval, data[key]):
+                return True
+    return False
 
-    只有"文件存在、是合法 JSON 对象、且缺 DEFAULT_CONFIG 的键"才算需要迁移，
-    main.py 据此把补全后的配置回写，方便用户发现并编辑新配置项。
-    文件不存在（走生成默认配置的路径）或损坏/非对象（load_config 已回退
-    默认值）时返回 False——这两种情况不应再动用户的文件。
+
+def needs_migration(path: Path) -> bool:
+    """检测配置文件是否为缺少新键的旧版本（v0.1 缺 sleep_*，v0.2 缺 v0.3 键）。
+
+    只有"文件存在、是合法 JSON 对象、且缺 DEFAULT_CONFIG 的键（含嵌套
+    子键）"才算需要迁移，main.py 据此把补全后的配置回写。
+    文件不存在或损坏/非对象（load_config 已回退默认值）时返回 False——
+    这两种情况不应再动用户的文件。
     """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -122,7 +187,7 @@ def needs_migration(path: Path) -> bool:
         return False
     if not isinstance(data, dict):
         return False
-    return not set(DEFAULT_CONFIG) <= set(data)
+    return _has_missing_keys(DEFAULT_CONFIG, data)
 
 
 def save_config(cfg: dict, path: Path) -> None:

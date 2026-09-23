@@ -35,9 +35,15 @@ def test_merges_known_keys_and_ignores_unknown(tmp_path):
 def test_save_then_load_roundtrip(tmp_path):
     p = tmp_path / "config.json"
     save_config({"scale": 4, "walk_speed": 120.0, "paused": True}, p)
-    # v0.2：旧文件缺 sleep 键时由 load_config 补默认值，期望 dict 需含之
+    # v0.3：旧文件缺 sleep/wrap_chance/sound/remind 键时由 load_config 补默认值
     assert load_config(p) == {"scale": 4, "walk_speed": 120.0, "paused": True,
-                              "sleep_start": "23:00", "sleep_end": "07:00"}
+                              "sleep_start": "23:00", "sleep_end": "07:00",
+                              "wrap_chance": 0.08,
+                              "sound": {"muted": False, "poke_sfx": True,
+                                        "sit_reminder": True,
+                                        "hourly_chime": True},
+                              "remind": {"sit_minutes": 45,
+                                         "idle_threshold_minutes": 5}}
 
 
 def test_wrong_typed_values_fall_back_per_key(tmp_path):
@@ -182,8 +188,62 @@ def test_migration_preserves_user_values(tmp_path):
                  encoding="utf-8")
     assert needs_migration(p) is True
     cfg = load_config(p)      # 加载：缺失键已在内存补默认值
-    save_config(cfg, p)       # 回写：文件变成完整 5 键
+    save_config(cfg, p)       # 回写：文件变成完整 8 键
     data = json.loads(p.read_text(encoding="utf-8"))
     assert data == {"scale": 3, "walk_speed": 120.0, "paused": True,
-                    "sleep_start": "23:00", "sleep_end": "07:00"}
+                    "sleep_start": "23:00", "sleep_end": "07:00",
+                    "wrap_chance": 0.08,
+                    "sound": {"muted": False, "poke_sfx": True,
+                              "sit_reminder": True, "hourly_chime": True},
+                    "remind": {"sit_minutes": 45,
+                               "idle_threshold_minutes": 5}}
     assert needs_migration(p) is False   # 回写后不再需要迁移
+
+
+# ── v0.3：新键 wrap_chance / sound / remind 的迁移与校验 ────────────────
+
+def test_v02_config_migrates_to_v03(tmp_path):
+    """v0.2 的 5 键配置：load 后补全 v0.3 新键，旧值保留。"""
+    p = tmp_path / "config.json"
+    p.write_text('{"scale": 2, "walk_speed": 60.0, "paused": false,'
+                 ' "sleep_start": "23:00", "sleep_end": "07:00"}',
+                 encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg["wrap_chance"] == 0.08
+    assert cfg["sound"] == {"muted": False, "poke_sfx": True,
+                            "sit_reminder": True, "hourly_chime": True}
+    assert cfg["remind"] == {"sit_minutes": 45, "idle_threshold_minutes": 5}
+    assert cfg["sleep_start"] == "23:00"          # 旧值保留
+    assert needs_migration(p) is True             # 缺新键 → 需要迁移回写
+
+
+def test_partial_sound_section_filled(tmp_path):
+    """sound 段存在但缺子键：缺的子键补默认，已有子键保留。"""
+    p = tmp_path / "config.json"
+    p.write_text('{"sound": {"muted": true}}', encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg["sound"]["muted"] is True
+    assert cfg["sound"]["poke_sfx"] is True
+    assert needs_migration(p) is True             # 嵌套缺键也算需迁移
+
+
+def test_bad_wrap_chance_falls_back(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text('{"wrap_chance": 5}', encoding="utf-8")
+    assert load_config(p)["wrap_chance"] == 0.08
+
+
+def test_bad_sound_section_falls_back_whole(tmp_path):
+    """sound 段不是对象 → 整段回退默认（与其他键的回退语义一致）。"""
+    p = tmp_path / "config.json"
+    p.write_text('{"sound": "loud", "remind": {"sit_minutes": -3}}',
+                 encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg["sound"] == DEFAULT_CONFIG["sound"]
+    assert cfg["remind"] == DEFAULT_CONFIG["remind"]
+
+
+def test_v03_config_needs_no_migration(tmp_path):
+    p = tmp_path / "config.json"
+    save_config(load_config(p), p)                # 生成完整默认配置
+    assert needs_migration(p) is False

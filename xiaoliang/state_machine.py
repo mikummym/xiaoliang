@@ -67,6 +67,8 @@ class PetStateMachine:
                  climb_speed: float = 40.0,
                  climb_chance: float = 0.15,
                  climb_low_mood_factor: float = 0.3,
+                 wrap_chance: float = 0.08,
+                 wrap_edges=None,
                  hungry_walk_factor: float = 0.6,
                  sit_range: tuple[float, float] = (10.0, 30.0),
                  woken_range: tuple[float, float] = (3.0, 6.0),
@@ -89,6 +91,12 @@ class PetStateMachine:
         self.climb_speed = climb_speed
         self.climb_chance = climb_chance
         self.climb_low_mood_factor = climb_low_mood_factor
+        # ── v0.3 穿越（spec §1.4）：概率与可穿越边缘集合（GUI 注入，
+        # 元素 -1=左缘 / 1=右缘；某侧边缘外有相邻屏幕则该侧不可穿越）──
+        self.wrap_chance = wrap_chance
+        self.wrap_edges = {e for e in (wrap_edges or ()) if e in (-1, 1)}
+        # 穿越阶段："out"=正走出屏幕 / "in"=瞬移后正走回屏内 / None=不在穿越
+        self._wrap_phase: str | None = None
         self.hungry_walk_factor = hungry_walk_factor
         self.sit_range = sit_range
         self.woken_range = woken_range
@@ -140,6 +148,10 @@ class PetStateMachine:
         self.paused = paused
         for callback in self._pause_listeners:
             callback(paused)
+
+    def set_wrap_edges(self, edges) -> None:
+        """更新可穿越边缘集合（屏幕热插拔时由 GUI 刷新，spec §1.4）。"""
+        self.wrap_edges = {e for e in edges if e in (-1, 1)}
 
     def in_sleep_window(self) -> bool:
         """注入时钟的当前时刻是否落在配置的睡眠时段内。"""
@@ -340,6 +352,9 @@ class PetStateMachine:
                 self._walk_intent = None
                 self._start_idle()
             return
+        if self._walk_intent == "wrap":
+            self._tick_wrap()
+            return
         max_x = self.bounds.width - self.pet_width
         if self.x <= 0:
             self.x = 0.0
@@ -366,14 +381,21 @@ class PetStateMachine:
                 self._land()             # 落地统一收口（时段内直接睡）
 
     def _decide_walk_or_climb(self) -> None:
-        """发呆计时到点后掷骰子：按概率去攀爬，否则普通散步（spec §2.2）。"""
+        """发呆计时到点后掷骰子，三岔（spec §1.4）：
+        攀爬 climb_chance（心情差 ×0.3）→ 穿越 wrap_chance（仅当存在
+        可穿越边缘时参与，否则概率并入散步）→ 普通散步。
+        """
         chance = self.climb_chance
         if self.status.is_bored:         # 心情差（<20）：没兴致玩，概率 ×0.3
             chance *= self.climb_low_mood_factor
-        if self._rng.random() < chance:
+        roll = self._rng.random()
+        if roll < chance:
             self._start_climb_sequence()
-        else:
-            self._start_walking()
+            return
+        if self.wrap_edges and roll < chance + self.wrap_chance:
+            self._start_wrap_sequence()
+            return
+        self._start_walking()
 
     def _start_climb_sequence(self) -> None:
         """选最近的左/右边缘：已贴壁直接爬，否则先走过去（intent=climb）。"""
@@ -397,6 +419,33 @@ class PetStateMachine:
         dist = abs(target - self.x)
         self._timer = dist / self._effective_walk_speed() + 1.0
 
+    def _start_wrap_sequence(self) -> None:
+        """穿越意图：选定一个可穿越边缘方向走过去，到缘不停直接走出屏幕。"""
+        edge = self._rng.choice(sorted(self.wrap_edges))   # sorted 保证可测
+        self.direction = edge
+        self._walk_intent = "wrap"
+        self._wrap_phase = "out"
+        self.state = State.WALKING
+
+    def _tick_wrap(self) -> None:
+        """穿越推进（位移已在 _tick_walking 顶部完成）：
+        out 阶段走到整体没入屏外 → 瞬移到对端屏外转 in 阶段；
+        in 阶段走回屏内 → 转普通散步并重置随机计时（不在边缘立刻停）。
+        穿越期间不递减计时器、不做边缘钳制。
+        """
+        if self._wrap_phase == "out":
+            exited = (self.x <= -self.pet_width if self.direction < 0
+                      else self.x >= self.bounds.width)
+            if exited:
+                self.x = float(self.bounds.width if self.direction < 0
+                               else -self.pet_width)
+                self._wrap_phase = "in"
+        elif self._wrap_phase == "in":
+            if 0.0 <= self.x <= self.bounds.width - self.pet_width:
+                self._walk_intent = None
+                self._wrap_phase = None
+                self._timer = self._rng.uniform(*self.walk_range)
+
     def _start_climbing(self, direction: str) -> None:
         """贴壁开爬：x 吸附到墙面，竖直速度清零。"""
         self.state = State.CLIMBING
@@ -413,17 +462,24 @@ class PetStateMachine:
     def _start_idle(self) -> None:
         self.state = State.IDLE
         self._walk_intent = None
+        self._wrap_phase = None
         self._timer = self._rng.uniform(*self.idle_range)
 
     def _start_walking(self) -> None:
         self.state = State.WALKING
         self._walk_intent = None
+        self._wrap_phase = None
         self.direction = self._rng.choice((-1, 1))
         self._timer = self._rng.uniform(*self.walk_range)
 
     def _start_sleeping(self) -> None:
         self.state = State.SLEEPING
         self._walk_intent = None
+        self._wrap_phase = None
+        # 穿越途中（可能在屏外）到点睡觉：把位置钳回工作区，
+        # 避免"睡在屏幕外看不见"（spec §1.6）
+        max_x = float(self.bounds.width - self.pet_width)
+        self.x = min(max(self.x, 0.0), max_x)
 
     def _land(self) -> None:
         """落地统一收口：睡眠时段内直接睡，否则回发呆。"""

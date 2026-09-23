@@ -605,3 +605,68 @@ def test_pause_listener_notified():
     m.set_paused(True)
     m.set_paused(False)
     assert seen == [True, False]
+
+
+# ── v0.3 新功能⑥：屏幕穿越（spec §1.4） ────────────────────────────
+
+def test_decide_can_choose_wrap():
+    # random_value 0.20 落在 [climb 0.15, 0.15+0.08) → 穿越分支
+    m = make_machine(rng=FakeRandom(choice_value=-1, random_value=0.20),
+                     wrap_edges={-1, 1})
+    m.tick(1.1)                        # IDLE 出门掷骰
+    assert m.state is State.WALKING
+    assert m._walk_intent == "wrap"
+    assert m.direction == -1           # 选中的可穿越边缘方向
+
+
+def test_wrap_skipped_when_no_edges():
+    """wrap_edges 为空：穿越概率并入普通散步。"""
+    m = make_machine(rng=FakeRandom(choice_value=-1, random_value=0.20),
+                     wrap_edges=set())
+    m.tick(1.1)
+    assert m.state is State.WALKING
+    assert m._walk_intent is None      # 普通散步
+
+
+def test_wrap_full_cycle_left_exit_right_enter():
+    m = make_machine(rng=FakeRandom(choice_value=-1, random_value=0.20),
+                     wrap_edges={-1, 1}, start_x=30)
+    m.tick(1.1)                        # → WALKING wrap 向左（speed 100）
+    m.tick(0.5)                        # x = -20，尚未整体没入（> -64）
+    assert m._walk_intent == "wrap"
+    m.tick(0.6)                        # x = -80 ≤ -64 → 瞬移到 x=800（右端屏外）
+    assert m.x == 800.0
+    m.tick(0.7)                        # 向左走回 70px → x=730 ≤ 736（max_x）→ 入屏
+    assert m._walk_intent is None      # 转普通散步
+    assert m.state is State.WALKING
+    assert m.direction == -1
+
+
+def test_wrap_right_exit_left_enter():
+    m = make_machine(rng=FakeRandom(choice_value=1, random_value=0.20),
+                     wrap_edges={-1, 1}, start_x=800 - 64 - 10)
+    m.tick(1.1)                        # → wrap 向右
+    m.tick(0.9)                        # x = 744+90=834 ≥ 800 → 瞬移 x=-64
+    assert m.x == -64.0
+    m.tick(0.7)                        # 向右走回 70px → x=6 ≥ 0 → 入屏
+    assert m._walk_intent is None
+
+
+def test_sleep_window_during_wrap_clamps_into_view():
+    """穿越途中（屏外）到点睡觉：位置钳回工作区，不能睡在屏幕外。"""
+    clock = FakeClock(dtime(12, 0))
+    m = make_machine(rng=FakeRandom(choice_value=-1, random_value=0.20),
+                     wrap_edges={-1, 1}, clock=clock, start_x=30)
+    m.tick(1.1)
+    m.tick(1.0)                        # x = -70 ≤ -64 → 瞬移到 x=800（屏外）
+    assert m.x == 800.0
+    clock.now = dtime(23, 30)          # 进入睡眠时段
+    m.tick(0.1)
+    assert m.state is State.SLEEPING
+    assert m.x == 800 - 64             # 已钳回工作区右界
+
+
+def test_set_wrap_edges_filters_invalid():
+    m = make_machine()
+    m.set_wrap_edges({-1, 0, 5})
+    assert m.wrap_edges == {-1}

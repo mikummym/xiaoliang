@@ -670,3 +670,59 @@ def test_set_wrap_edges_filters_invalid():
     m = make_machine()
     m.set_wrap_edges({-1, 0, 5})
     assert m.wrap_edges == {-1}
+
+
+# ── v0.3 新功能⑦⑧配套：REMINDING（spec §1.5） ─────────────────────
+
+def test_remind_accepted_from_idle_and_returns():
+    m = make_machine()
+    assert m.remind() is True
+    assert m.state is State.REMINDING
+    m.tick(3.1)                        # remind_secs 默认 3.0
+    assert m.state is State.IDLE
+
+
+def test_remind_rejected_while_paused():
+    m = make_machine()
+    m.set_paused(True)
+    assert m.remind() is False
+    assert m.state is State.IDLE
+
+
+def test_remind_rejected_while_sleeping():
+    clock = FakeClock(dtime(23, 30))
+    m = make_machine(clock=clock)
+    m.tick(0.5)                        # 入睡
+    assert m.state is State.SLEEPING
+    assert m.remind() is False
+    assert m.state is State.SLEEPING   # 零副作用
+
+
+def test_remind_resumes_walking_remaining_timer():
+    """提醒播完回原状态并接续剩余计时（同 POKE_REACT 恢复机制）。"""
+    m = make_machine(rng=FakeRandom(choice_value=1, random_value=0.99))
+    m.tick(1.1)                        # → WALKING，walk 计时 2.0
+    m.tick(1.0)                        # 剩 1.0
+    assert m.remind() is True
+    m.tick(3.1)                        # REMINDING 3.0 播完 → 回 WALKING
+    assert m.state is State.WALKING
+    m.tick(0.5)                        # 剩 0.5，还没走完
+    assert m.state is State.WALKING
+    m.tick(0.6)
+    assert m.state is State.IDLE
+
+
+def test_remind_from_climbing_returns_to_climbing():
+    m = make_machine(rng=FakeRandom(choice_value=-1, random_value=0.1),
+                     start_x=0)
+    m.tick(1.1)
+    assert m.state is State.CLIMBING
+    assert m.remind() is True
+    m.tick(3.1)
+    assert m.state is State.CLIMBING   # 回墙上继续爬
+
+
+def test_remind_rejected_while_dragged():
+    m = make_machine()
+    m.drag_start()
+    assert m.remind() is False

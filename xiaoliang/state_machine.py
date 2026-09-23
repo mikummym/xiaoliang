@@ -9,6 +9,11 @@ v0.2 扩展（spec: 2026-09-21-xiaoliang-v0.2-toy-design.md）：
 - 新状态：POKE_REACT / EATING / SLEEPING / WOKEN / CLIMBING / SITTING_TOP
 - 攀爬线：IDLE 出门时按概率走向最近侧壁 → 爬上去 → 顶边坐 →
   50% 原路爬下 / 50% 跳下（复用 FALLING）
+
+v0.3 扩展（spec: 2026-09-22-xiaoliang-v0.3-toy-design.md）：
+- 暂停 = 整体冻结（事件无响应、drag_end 直接落地）
+- 屏幕穿越意图（_walk_intent="wrap"）：走出屏外瞬移到对端走回
+- 新状态 REMINDING：久坐提醒/整点报时播伸懒腰动画，播完回原状态接续剩余计时
 """
 import random
 from dataclasses import dataclass
@@ -29,6 +34,7 @@ class State(Enum):
     WOKEN = auto()         # 睡觉被戳醒：惺忪几秒后回睡或起床
     CLIMBING = auto()      # 贴侧壁攀爬（climb_direction 区分上/下）
     SITTING_TOP = auto()   # 顶边坐着晃腿发呆
+    REMINDING = auto()     # 久坐提醒/整点报时：播伸懒腰动画后回原状态
 
 
 @dataclass(frozen=True)
@@ -74,6 +80,7 @@ class PetStateMachine:
                  woken_range: tuple[float, float] = (3.0, 6.0),
                  poke_react_secs: float = 1.0,
                  eating_secs: float = 2.0,
+                 remind_secs: float = 3.0,
                  start_x: float | None = None,
                  rng: random.Random | None = None,
                  status: PetStatus | None = None,
@@ -102,6 +109,12 @@ class PetStateMachine:
         self.woken_range = woken_range
         self.poke_react_secs = poke_react_secs
         self.eating_secs = eating_secs
+        self.remind_secs = remind_secs
+        # REMINDING 的恢复机制（与 POKE_REACT 的 _pre_poke_state 同款但
+        # 独立字段：REMINDING 中被戳 → POKE_REACT 播完回 REMINDING，
+        # 两层嵌套互不覆盖）
+        self._pre_remind_state: State | None = None
+        self._remind_resume_timer = 0.0
         self._rng = rng or random.Random()
         # ── v0.2 注入依赖：数值系统 / 时钟（默认系统时间）/ 变更回调 ──
         self.status = status or PetStatus()
@@ -208,6 +221,15 @@ class PetStateMachine:
                     prev = State.IDLE    # 防御：绝不回到反应自身（会死循环）
                 self.state = prev
                 self._timer = self._resume_timer
+        elif self.state is State.REMINDING:
+            self._timer -= dt
+            if self._timer <= 0:
+                # 播完回提醒前状态并接续剩余计时（同 POKE_REACT 恢复机制）
+                prev = self._pre_remind_state
+                if prev is None or prev is State.REMINDING:
+                    prev = State.IDLE    # 防御：绝不回到自身
+                self.state = prev
+                self._timer = self._remind_resume_timer
         elif self.state is State.EATING:
             self._timer -= dt
             if self._timer <= 0:
@@ -297,6 +319,25 @@ class PetStateMachine:
         self._timer = self.eating_secs
         self._walk_intent = None         # 半路投喂：停下吃饭
         self._eat_in_air = airborne
+        return True
+
+    def remind(self) -> bool:
+        """提醒事件（久坐/整点服务触发，spec §1.5）：播伸懒腰动画，
+        播完回原状态并接续剩余计时。
+
+        拒绝条件（返回 False，零副作用）：暂停 / 睡觉 / 惺忪 / 被拎着 /
+        正在提醒中——这是防御性兜底，完整免打扰判定在 reminder 服务层。
+        被拒时调用方仍会念语音：提醒的使命是传达信息，动画只是锦上添花。
+        """
+        if self.paused:
+            return False
+        if self.state in (State.SLEEPING, State.WOKEN, State.DRAGGED,
+                          State.REMINDING):
+            return False
+        self._pre_remind_state = self.state
+        self._remind_resume_timer = self._timer
+        self.state = State.REMINDING
+        self._timer = self.remind_secs
         return True
 
     # ── 拖拽（v0.1 行为不变；drag_start 多记一个回退状态） ─────────

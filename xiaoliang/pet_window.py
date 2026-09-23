@@ -11,13 +11,20 @@ v0.2 新增（spec §2.3）：
 - 攀爬渲染：爬下 = 帧序倒放，左壁 = 水平镜像（get_frame kwargs）
 - 坐顶姿势：面向墙 / 背靠墙两种随机姿势（背靠墙水平镜像复用同一组
   sitting_top 帧，不新增任何素材）
+
+v0.3 新增（spec §4.2 等）：
+- REMINDING 渲染：久坐提醒/整点报时播"伸懒腰"动画，播完回原状态
+- 戳音效：machine.poke() 受理（返回 True）才播音效，暂停时 poke 拒绝
+  返回 False 即静音，保证"暂停 = 完全无响应"语义
+- 多屏贴边 setMask 裁剪：贴边侧有相邻屏幕时 Windows 不按单屏边界裁剪
+  窗口，推出的搁板端头/脚部墨水会画到邻屏——用 setMask 裁掉越界条带
 """
 import math
 import random
 import time
 
 from PySide6.QtCore import QElapsedTimer, QPoint, Qt, QTimer
-from PySide6.QtGui import QCursor, QPainter, QPixmap
+from PySide6.QtGui import QCursor, QPainter, QPixmap, QRegion
 from PySide6.QtWidgets import QMenu, QToolTip, QWidget
 
 from .sprite import SpriteManager
@@ -51,6 +58,7 @@ STATE_ACTION = {
     State.WOKEN: "woken",
     State.CLIMBING: "climbing",
     State.SITTING_TOP: "sitting_top",
+    State.REMINDING: "remind",
 }
 
 # 状态 → tooltip 中文名（spec §2.3 映射表，逐字一致）
@@ -65,12 +73,14 @@ STATE_ZH = {
     State.WOKEN: "睡眼惺忪",
     State.CLIMBING: "爬墙",
     State.SITTING_TOP: "顶上坐着",
+    State.REMINDING: "伸懒腰",
 }
 
 
 class PetWindow(QWidget):
     def __init__(self, machine: PetStateMachine, sprites: SpriteManager,
-                 origin: QPoint | None = None, on_quit=None):
+                 origin: QPoint | None = None, on_quit=None, *,
+                 sound=None, mask_edges=None):
         super().__init__(None,
                          Qt.WindowType.FramelessWindowHint
                          | Qt.WindowType.WindowStaysOnTopHint
@@ -97,6 +107,15 @@ class PetWindow(QWidget):
         # 的瞬间 machine.x 仍吸附在墙边，必须跨帧沿用同一推出量，立即归零
         # 窗口会横跳 K*scale 物理像素
         self._cling_margin = 0
+        # ── v0.3 注入：声音引擎（戳音效）与需 mask 裁剪的边缘集合 ──
+        # sound 可为 None（测试/静音环境）；mask_edges = 贴边侧有相邻
+        # 屏幕的边缘（{-1,1} 子集），由 screen_info 计算、main.py 注入
+        self._sound = sound
+        self._mask_edges = set(mask_edges or ())
+        # mask 是否已设置：只在需要↔不需要切换或推出量变化时调
+        # setMask/clearMask（窗口重组合有成本，不能每帧做）
+        self._mask_on = False
+        self._mask_margin_px = -1
         # 本次坐顶的姿势：True=面向墙、False=背靠墙，进入 SITTING_TOP 的
         # 瞬间随机掷一次，坐姿期间保持不变
         self._sit_facing_wall = True
@@ -129,6 +148,14 @@ class PetWindow(QWidget):
         if self.machine.state is State.WALKING:
             return "walk_right" if self.machine.direction > 0 else "walk_left"
         return STATE_ACTION[self.machine.state]
+
+    def set_mask_edges(self, edges: set) -> None:
+        """屏幕热插拔时刷新需 mask 的边缘集合（main.py 调，spec §4.2）。"""
+        self._mask_edges = set(edges)
+        if self._mask_on:            # 强制下次 tick 重算 mask
+            self.clearMask()
+            self._mask_on = False
+            self._mask_margin_px = -1
 
     def _to_global(self, x: float, y: float) -> QPoint:
         """状态机坐标（工作区原点）→ 全局屏幕坐标。"""
@@ -204,11 +231,13 @@ class PetWindow(QWidget):
             # 发生，被姿势切换本身掩盖，看起来不突兀
             self._cling_margin = (CLING_MARGIN_LOGICAL if self._sit_facing_wall
                                   else CLING_MARGIN_BACK)
-        elif self.machine.state in (State.POKE_REACT, State.FALLING):
-            # 在壁上被戳（POKE_REACT，播完自然回到贴壁状态）或坐够跳下
-            #（FALLING）的瞬间 machine.x 仍吸附在墙边，推出量必须沿用
-            # 进入反应/下落前的值不能归零，否则窗口一帧横跳 K*scale；
-            # FALLING 落地后进 IDLE/SLEEPING，由下一分支清除
+        elif self.machine.state in (State.POKE_REACT, State.FALLING,
+                                    State.EATING, State.REMINDING):
+            # 在壁上被戳/空中进食/壁上被提醒/跳下的瞬间 machine.x 仍吸附
+            # 在墙边，推出量必须沿用进入前的值不能归零，否则窗口一帧横跳
+            # K*scale；落地/播完回 IDLE 等地面状态后由下一分支清除。
+            # EATING/REMINDING 发生在地面时 _cling_margin 本来就是 0，
+            # pass 保持不变，无副作用
             pass
         else:
             # IDLE/WALKING/DRAGGED/SLEEPING/EATING/WOKEN：不贴边，推出量归零
@@ -218,6 +247,32 @@ class PetWindow(QWidget):
         # 覆盖 22..42，保持偏移不会把角色裁掉，无需额外处理
         cling_off = (self._cling_margin * self.sprites.scale
                      * self.machine.climb_wall)
+        # ── v0.3 修复③（spec §4.2）：贴边侧有相邻屏幕时，Windows 不按
+        # 单屏边界裁剪窗口，推出的搁板端头/脚部墨水会画到邻屏上——用
+        # setMask 裁掉越界条带。只在边缘归属/推出量变化时重设 mask，
+        # 不是每帧操作。宽度 = 推出逻辑列 × 素材放大 × 设备像素比
+        # （widget 坐标在高 DPI 下按设备像素解释，100% 缩放时 dpr=1）
+        need_mask = (self._cling_margin > 0
+                     and self.machine.climb_wall in self._mask_edges)
+        if need_mask:
+            margin_px = int(round(self._cling_margin * self.sprites.scale
+                                  * self.devicePixelRatioF()))
+            if not self._mask_on or margin_px != self._mask_margin_px:
+                w, h = int(self.width() * self.devicePixelRatioF()), \
+                    int(self.height() * self.devicePixelRatioF())
+                if self.machine.climb_wall > 0:
+                    # 右壁：窗口右侧 margin_px 越界 → 裁掉右边条带
+                    region = QRegion(0, 0, w - margin_px, h)
+                else:
+                    # 左壁：裁掉左边条带
+                    region = QRegion(margin_px, 0, w - margin_px, h)
+                self.setMask(region)
+                self._mask_on = True
+                self._mask_margin_px = margin_px
+        elif self._mask_on:
+            self.clearMask()
+            self._mask_on = False
+            self._mask_margin_px = -1
         self.move(self._to_global(self.machine.x, self.machine.y)
                   + QPoint(cling_off, 0))
         # tooltip 每秒刷新：数值随时间衰减，刷太快没有意义
@@ -278,8 +333,11 @@ class PetWindow(QWidget):
             pressed_ms = (time.monotonic() - self._press_ts) * 1000.0
             if not self._drag_moved and pressed_ms < POKE_MAX_MS:
                 # 短按且无有效位移 = 戳：不调 drag_end()（不触发下落），
-                # machine.poke() 内部会回退到拖拽前状态并播放反应
-                self.machine.poke()
+                # machine.poke() 内部会回退到拖拽前状态并播放反应。
+                # v0.3：poke() 返回是否受理（暂停时 False）——受理才播
+                # 音效，保证"暂停 = 完全无响应"的语义（spec §1.1）
+                if self.machine.poke() and self._sound is not None:
+                    self._sound.play_poke()
             else:
                 self.machine.drag_end()
             event.accept()

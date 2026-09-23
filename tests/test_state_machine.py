@@ -336,11 +336,84 @@ def test_feed_in_sleep_window_returns_to_sleep():
     assert m.state is State.SLEEPING     # 吃完仍在时段 → 回睡
 
 
-def test_feed_refused_while_climbing():
-    m = make_machine(rng=FakeRandom(random_value=0.0), start_x=800 - 64)
-    m.tick(1.1)
+# ── v0.3 修复①：暂停冻结事件（spec §1.1） ──────────────────────────
+
+def test_poke_ignored_while_paused():
+    m = make_machine()
+    m.set_paused(True)
+    mood0 = m.status.mood
+    assert m.poke() is False          # v0.3 起 poke 返回是否受理
+    assert m.state is State.IDLE      # 不播反应
+    assert m.status.mood == mood0     # 不加心情
+
+
+def test_feed_rejected_while_paused():
+    m = make_machine()
+    m.set_paused(True)
+    full0 = m.status.fullness
+    assert m.feed() is False
+    assert m.state is State.IDLE
+    assert m.status.fullness == full0
+
+
+# ── v0.3 修复②：攀爬中/坐顶可喂食（spec §1.2） ─────────────────────
+
+def test_feed_accepted_while_climbing_then_falls():
+    # random_value 0.1 < climb_chance 0.15 → IDLE 出门即选攀爬；
+    # start_x=0 已贴左壁 → 省去走向边缘，直接进 CLIMBING
+    m = make_machine(rng=FakeRandom(choice_value=-1, random_value=0.1),
+                     start_x=0)
+    m.tick(1.1)                        # IDLE 计时 1.0 到点 → 掷骰 → 攀爬
     assert m.state is State.CLIMBING
-    assert m.feed() is False             # 爬墙时不喂（spec 裁定见计划注记）
+    assert m.feed() is True            # 墙上接住食物
+    assert m.state is State.EATING
+    m.tick(2.1)                        # eating 2.0s 播完 → 空中进食转下落
+    assert m.state is State.FALLING
+    m.tick(0.1)                        # 本就贴地 → 首帧落地收口
+    assert m.state is State.IDLE
+    assert m.y == 600 - 64
+
+
+def test_feed_accepted_while_sitting_top_then_falls():
+    m = make_machine()
+    m.state = State.SITTING_TOP        # 测试捷径：直接置于顶边
+    m.y = 0.0
+    assert m.feed() is True
+    m.tick(2.1)                        # 吃完 → 从顶边下落
+    assert m.state is State.FALLING
+    m.tick(1.5)                        # gravity 1000 → 落地
+    assert m.state is State.IDLE
+    assert m.y == 600 - 64
+
+
+def test_feed_on_ground_still_ends_idle_not_falling():
+    """地面进食行为不变：吃完直接回 IDLE（不进入 FALLING）。"""
+    m = make_machine()
+    assert m.feed() is True
+    m.tick(2.1)
+    assert m.state is State.IDLE
+
+
+# ── v0.3 修复④：暂停中半空松手直接落地（spec §1.3） ────────────────
+
+def test_drag_end_while_paused_lands_on_floor():
+    m = make_machine()
+    m.set_paused(True)
+    m.drag_start()
+    m.drag_move(300, 200)              # 半空
+    m.drag_end()
+    assert m.state is State.IDLE       # 不再悬空 FALLING
+    assert m.y == 600 - 64             # 落到正下方地面
+    assert m.x == 300                  # 水平位置不变
+
+
+def test_drag_end_while_running_still_falls():
+    """非暂停路径行为不变：松手 → FALLING。"""
+    m = make_machine()
+    m.drag_start()
+    m.drag_move(300, 200)
+    m.drag_end()
+    assert m.state is State.FALLING
 
 
 # ── v0.2：攀爬线（spec §2.2） ─────────────────────────────────────

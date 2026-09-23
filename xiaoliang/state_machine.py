@@ -122,6 +122,9 @@ class PetStateMachine:
         self._resume_timer = 0.0
         # 暂停状态变更监听（GUI 层同步托盘/菜单勾选，见 tray.py）
         self._pause_listeners: list = []
+        # v0.3 修复②：EATING 是否发生在空中（攀爬/坐顶时接住食物）——
+        # 吃完需要转 FALLING 自然下落，而不是原地回 IDLE（会悬空）
+        self._eat_in_air = False
         self._timer = self._rng.uniform(*self.idle_range)
 
     @property
@@ -196,9 +199,13 @@ class PetStateMachine:
         elif self.state is State.EATING:
             self._timer -= dt
             if self._timer <= 0:
-                # 吃完：仍在睡眠时段回笼觉，否则回发呆
-                if in_window:
-                    self._start_sleeping()
+                if self._eat_in_air:
+                    # v0.3 修复②：墙上/顶吃完 → 自然下落，_land 统一收口
+                    self._eat_in_air = False
+                    self.state = State.FALLING
+                    self.vy = 0.0
+                elif in_window:
+                    self._start_sleeping()   # 仍在睡眠时段回笼觉
                 else:
                     self._start_idle()
         elif self.state is State.SLEEPING:
@@ -225,14 +232,18 @@ class PetStateMachine:
 
     # ── 事件 API（GUI 层调用） ─────────────────────────────────────
 
-    def poke(self) -> None:
+    def poke(self) -> bool:
         """戳事件：任何状态都可触发；心情加分由 status 冷却管理。
+
+        返回是否受理：暂停时 False（GUI 据此不播音效）。
 
         特判（spec §2.2/§2.3）：
         - SLEEPING/WOKEN 中被戳 → 进 WOKEN（睡眼惺忪），不是常规反应
         - DRAGGED 中被戳 = GUI 判定"按下但无有效位移"（点击而非拖拽）：
           回退到拖拽前状态播反应，不触发下落
         """
+        if self.paused:                  # v0.3 修复①（spec §1.1）：暂停 = 整体冻结，事件完全无响应
+            return False
         if self.status.poke() and self._on_status_change is not None:
             self._on_status_change()     # 数值真的变了才落盘
         base = (self._pre_drag_state if self.state is State.DRAGGED
@@ -242,22 +253,29 @@ class PetStateMachine:
         if base in (State.SLEEPING, State.WOKEN):
             self.state = State.WOKEN
             self._timer = self._rng.uniform(*self.woken_range)
-            return
+            return True
         if self.state is State.POKE_REACT:
             self._timer = self.poke_react_secs   # 连戳：反应重播
-            return
+            return True
         self._pre_poke_state = base
         self._resume_timer = self._timer         # 记下原状态剩余计时
         self.state = State.POKE_REACT
         self._timer = self.poke_react_secs
+        return True
 
     def feed(self) -> bool:
-        """喂食事件：仅空闲/走路/睡觉/惺忪时接受；吃撑或时机不对返回 False。
+        """喂食事件：空闲/走路/睡觉/惺忪/攀爬/坐顶时接受；吃撑或时机
+        不对返回 False。返回 False 时零副作用，GUI 可安全忽略。
 
-        返回 False 时零副作用（数值不变、状态不变），GUI 可安全忽略。
+        v0.3 修复①②（spec §1.1/§1.2）：暂停时无响应；攀爬/坐顶也能
+        接住食物——原地吃完后转 FALLING 自然下落（_eat_in_air 标记）。
         """
+        if self.paused:
+            return False
+        airborne = self.state in (State.CLIMBING, State.SITTING_TOP)
         if self.state not in (State.IDLE, State.WALKING,
-                              State.SLEEPING, State.WOKEN):
+                              State.SLEEPING, State.WOKEN,
+                              State.CLIMBING, State.SITTING_TOP):
             return False
         if not self.status.feed():
             return False                 # 吃撑了
@@ -266,6 +284,7 @@ class PetStateMachine:
         self.state = State.EATING
         self._timer = self.eating_secs
         self._walk_intent = None         # 半路投喂：停下吃饭
+        self._eat_in_air = airborne
         return True
 
     # ── 拖拽（v0.1 行为不变；drag_start 多记一个回退状态） ─────────
@@ -285,8 +304,21 @@ class PetStateMachine:
         self.y = min(max(0.0, y), self.bounds.height - self.pet_height)
 
     def drag_end(self) -> None:
-        """松手 → 下落。"""
+        """松手 → 下落。
+
+        v0.3 修复④（spec §1.3）：暂停中松手不再悬停半空——直接落到
+        正下方地面并置 IDLE（暂停渲染本就播 idle 帧，视觉上是"被放下
+        后乖乖站好"），恢复暂停后无异常状态需要收口。
+        """
         if self.state is State.DRAGGED:
+            if self.paused:
+                self.y = float(self.floor_y)
+                max_x = float(self.bounds.width - self.pet_width)
+                self.x = min(max(self.x, 0.0), max_x)
+                self._walk_intent = None
+                self.state = State.IDLE
+                self._timer = self._rng.uniform(*self.idle_range)
+                return
             self.state = State.FALLING
             self.vy = 0.0
 

@@ -15,7 +15,7 @@ from xiaoliang.sprite import SpriteManager  # noqa: E402
 def main() -> int:
     app = QApplication([])  # QPixmap 需要 QGuiApplication 存在
     assets_dir = Path(__file__).resolve().parent.parent / "assets"
-    sprites = SpriteManager(assets_dir, scale=2)
+    sprites = SpriteManager(assets_dir, scale=1)
     print("动作:", sprites.actions())
     print("帧尺寸(放大后):", sprites.frame_size())
     for name in sprites.actions():

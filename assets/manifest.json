@@ -1,7 +1,7 @@
 {
   "frame_size": [
-    64,
-    64
+    128,
+    128
   ],
   "actions": {
     "idle": {

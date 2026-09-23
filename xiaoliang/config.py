@@ -8,7 +8,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG = {
-    "scale": 2,
+    "scale": 1,             # 帧放大倍数；正式素材帧已是 128px，默认 1 即原尺寸
     "walk_speed": 60.0,
     "paused": False,
     "sleep_start": "23:00",   # 睡眠时段起点（含），HH:MM 24 小时制

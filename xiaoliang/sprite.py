@@ -48,7 +48,7 @@ def frame_index(elapsed_ms: int, fps: float, frame_count: int) -> int:
 class SpriteManager:
     """加载 sprite sheet 并按动作/时间返回当前帧（依赖 Qt，需先有 QApplication）。"""
 
-    def __init__(self, assets_dir: Path, scale: int = 2):
+    def __init__(self, assets_dir: Path, scale: int = 1):
         self._scale = scale
         manifest_path = assets_dir / "manifest.json"
         if not manifest_path.exists():

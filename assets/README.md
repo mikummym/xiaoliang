@@ -1,19 +1,26 @@
 # 素材说明
 
-## 当前素材：程序生成的占位小人
+## 当前素材：ChatGPT 单帧源图 + 程序派生微动画（B 方案）
 
-运行 `.venv\Scripts\python tools\gen_placeholder_assets.py` 重新生成。
-占位素材用于开发期，正式发布前替换为 AI 生成的"小凉"形象（蓝发、慵懒气质、
-可抱贝斯），保持同样的文件格式即可，代码无需改动。
+源图为 `assets/src/stand.jpg`（站立）与 `assets/src/sleep.jpg`（睡觉），
+白底 JPG。运行 `.venv\Scripts\python tools\gen_assets_from_photos.py`
+从这两张单帧派生全部 12 个动作的 sprite sheet（边缘泛洪抠底 → 光晕清理 →
+包围盒裁剪 → 128 帧降采样 → 逐动作缩放/旋转/位移微动画 → 横排拼帧），
+并输出总览图 `xinsucai/preview.png` 供肉眼验收。
+Pillow 仅该开发工具使用，运行时加载仍走 PySide6 QImage，不进打包依赖。
+
+日后若换成逐动作逐帧源图（A 方案抽卡），保持同样的文件格式替换同名
+PNG、按实际帧数/帧率更新 manifest.json 即可，代码无需改动。
+旧占位生成脚本 `tools\gen_placeholder_assets.py` 保留作回退参考。
 
 ## 格式约定
 
-- 每个动作一张横向排列的 sprite sheet PNG，帧尺寸 64x64，透明背景
+- 每个动作一张横向排列的 sprite sheet PNG，帧尺寸 128x128，透明背景
 - `manifest.json` 描述帧尺寸、每个动作的文件名/帧数/帧率：
 
   ```json
   {
-    "frame_size": [64, 64],
+    "frame_size": [128, 128],
     "actions": {
       "idle": {"file": "idle.png", "frames": 4, "fps": 3}
     }
@@ -32,7 +39,7 @@
 
 1. 先定稿单帧形象（保证后续所有动作风格一致）：
 
-   > pixel art sprite, 64x64, single character, anime girl with long blue
+   > pixel art sprite, 128x128, single character, anime girl with long blue
    > hair, sleepy relaxed expression, holding a bass guitar, side view,
    > transparent background, clean pixels, limited palette
 
@@ -54,7 +61,7 @@
   规格：wav 格式（QSoundEffect 原生支持），建议 16-bit 单声道、≤1 秒短音。
   替换/新增：把 wav 丢进目录即可，无需改代码或配置；删文件即移除。
 - `remind.png`：提醒动作（伸懒腰），4 帧 @ 4fps，帧规格与其他动作一致
-  （64×64 逻辑像素横排）。替换时按 manifest.json 的 remind 条目画好
+  （128×128 逻辑像素横排）。替换时按 manifest.json 的 remind 条目画好
   帧数与尺寸，跑 `tools\check_sprites.py` 验证。
 - 占位音效由 `tools\gen_placeholder_sounds.py` 合成（正弦短音），
   正式素材就绪后直接覆盖。

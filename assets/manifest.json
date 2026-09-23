@@ -54,6 +54,11 @@
       "frames": 4,
       "fps": 3
     },
+    "remind": {
+      "file": "remind.png",
+      "frames": 4,
+      "fps": 4
+    },
     "walk_left": {
       "file": "walk_left.png",
       "frames": 6,

@@ -187,6 +187,10 @@ def main() -> None:
         "climbing": ([{"phase": p} for p in range(4)], 8, draw_climbing),
         "sitting_top": ([{"leg_swing": s} for s in (1, 0, -1, 0)],
                         3, draw_sitting_top),
+        # v0.3 提醒动作：举手伸懒腰（复用 draw_pet 的 arms_up + 呼吸起伏，
+        # 占位素材——正式素材替换规格见 assets/README.md）
+        "remind": ([{"arms_up": True, "body_dy": dy} for dy in (0, 1, 2, 1)],
+                   4, draw_pet),
     }
     manifest = {"frame_size": [FRAME, FRAME], "actions": {}}
     for name, (frames_params, fps, draw) in specs.items():

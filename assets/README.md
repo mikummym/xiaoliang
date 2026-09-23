@@ -46,3 +46,14 @@
 
 - [ ] 正式素材阶段为 `climbing` 单独出"被戳"帧（当前在墙上被戳播放的
       是地面姿势的 `poke_react`，见主 README"已知问题"）
+
+## 音频素材（v0.3）
+
+- `sounds/poke/*.wav`：戳她音效池，程序启动时目录式加载（随机播一个）。
+  规格：wav 格式（QSoundEffect 原生支持），建议 16-bit 单声道、≤1 秒短音。
+  替换/新增：把 wav 丢进目录即可，无需改代码或配置；删文件即移除。
+- `remind.png`：提醒动作（伸懒腰），4 帧 @ 4fps，帧规格与其他动作一致
+  （64×64 逻辑像素横排）。替换时按 manifest.json 的 remind 条目画好
+  帧数与尺寸，跑 `tools\check_sprites.py` 验证。
+- 占位音效由 `tools\gen_placeholder_sounds.py` 合成（正弦短音），
+  正式素材就绪后直接覆盖。

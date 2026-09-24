@@ -16,8 +16,8 @@
     },
     "dragged": {
       "file": "dragged.png",
-      "frames": 2,
-      "fps": 6
+      "frames": 4,
+      "fps": 4
     },
     "falling": {
       "file": "falling.png",

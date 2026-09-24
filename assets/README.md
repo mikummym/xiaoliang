@@ -1,6 +1,6 @@
 # 素材说明
 
-## 当前素材：ChatGPT 单帧源图 + 程序派生微动画（B 方案）+ 走路抽卡（A 方案）+ 攀爬/坐顶专用管线
+## 当前素材：ChatGPT 单帧源图 + 程序派生微动画（B 方案）+ 走路抽卡（A 方案）+ 攀爬/坐顶/被拎专用管线
 
 源图为 `assets/src/stand.jpg`（站立）与 `assets/src/sleep.jpg`（睡觉），
 白底 JPG。运行 `.venv\Scripts\python tools\gen_assets_from_photos.py`
@@ -28,6 +28,14 @@ docstring）；B 方案脚本重跑时只读盘拼总览、不覆写。日后换
   搁板由程序绘制：暖木色横板横贯整帧（v0.1 占位版同语义同配色），伸出屏幕
   缘的一端被渲染裁剪读作"侧壁探出的小搁板"；板托臀部坐线（LEDGE_TOP=89，
   验收两轮微调定稿）。单帧源图做不了逐腿晃荡，微动画为绕底部锚点呼吸
+- `dragged`：源图 `assets/src/dragged.png`（4 帧横排被拎后颈的挣扎循环，
+  入库前用户文件名 111.png），运行
+  `.venv\Scripts\python tools\gen_drag_from_photos.py`（4 帧 @4fps）。
+  水平**居中**：被拎时窗口跟手、不贴墙，没有贴边推出量要配套（climbing/
+  sitting_top 的右对齐是为 CLING_MARGIN=36 服务）；尺寸校准系数
+  DRAG_SIZE=0.70（本源图角色天生画大约 1.43 倍，实测与对齐原理见脚本
+  docstring）；替换掉 B 方案"站姿左右拧 2 帧"的假挣扎，四肢垂荡的摆动由
+  源图 4 帧直接给出
 
 日后若换成逐动作逐帧源图（A 方案抽卡），保持同样的文件格式替换同名
 PNG、按实际帧数/帧率更新 manifest.json 即可，代码无需改动。
@@ -47,10 +55,10 @@ PNG、按实际帧数/帧率更新 manifest.json 即可，代码无需改动。
   }
   ```
 
-- 动作名固定：`idle` / `walk_left` / `walk_right` / `dragged` / `falling` /
-  `poke_react`(2帧@6fps) / `eating`(4帧@6fps) / `sleeping`(2帧@2fps) /
-  `woken`(2帧@3fps) / `climbing`(4帧@8fps) / `sitting_top`(4帧@4fps) /
-  `remind`(4帧@4fps)
+- 动作名固定：`idle` / `walk_left` / `walk_right` / `dragged`(4帧@4fps) /
+  `falling` / `poke_react`(2帧@6fps) / `eating`(4帧@6fps) /
+  `sleeping`(2帧@2fps) / `woken`(2帧@3fps) / `climbing`(4帧@8fps) /
+  `sitting_top`(4帧@4fps) / `remind`(4帧@4fps)
 - 朝向约定：角色默认画成朝右；`walk_left` 是 `walk_right` 的水平镜像；
   `climbing` 只画"右壁向上爬"，向下爬 = 帧序倒放、左壁 = 水平镜像
   （均由渲染层 `SpriteManager.get_frame` 完成，素材无需额外出图）

@@ -11,8 +11,8 @@
     },
     "walk_right": {
       "file": "walk_right.png",
-      "frames": 6,
-      "fps": 8
+      "frames": 4,
+      "fps": 6
     },
     "dragged": {
       "file": "dragged.png",
@@ -61,8 +61,8 @@
     },
     "walk_left": {
       "file": "walk_left.png",
-      "frames": 6,
-      "fps": 8
+      "frames": 4,
+      "fps": 6
     }
   }
 }

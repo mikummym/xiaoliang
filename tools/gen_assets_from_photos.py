@@ -2,7 +2,8 @@
 
 源图：assets/src/stand.jpg（站立）、assets/src/sleep.jpg（睡觉），
 白底 JPG（ChatGPT 生成的像素风单帧）。本工具把它们加工成 manifest 里
-声明的 12 个动作的横向 sprite sheet，帧尺寸 128x128、透明背景。
+声明的动作（walk 两动作除外，见文末说明）的横向 sprite sheet，帧尺寸
+128x128、透明背景。
 
 流水线：
   1. 边缘泛洪填充抠掉白底（只从图像边界向内 Flood，角色内部即使有白色
@@ -13,7 +14,11 @@
      平均降采样比 LANCZOS 更少振铃），脚底对齐帧底、水平居中；
   4. 逐动作微动画：以"脚底中心"为锚点做 缩放/旋转/上下位移 的仿射变换，
      呼吸、走路弹跳、挤压拉伸等全靠这几个参数组合出来；
-  5. 横向拼帧写 assets/<action>.png；walk_left 直接镜像 walk_right。
+  5. 横向拼帧写 assets/<action>.png。
+
+walk_right / walk_left 已改由 tools/gen_walk_from_photos.py 从 4 帧源图
+（assets/src/walk.jpg，A 方案抽卡）生成；本脚本重跑时只读盘上现成 sheet
+拼进总览图，不覆写这两个文件。
 
 另输出 xinsucai/preview.png 总览图（灰底+动作名）供肉眼验收。
 
@@ -50,10 +55,8 @@ ACTIONS = {
     # 站立呼吸：轻微起伏 + 胸腔缩放
     "idle": [("stand", 1, 1, 0, 0), ("stand", 1, 1.01, 0, -1),
              ("stand", 1, 1.02, 0, -2), ("stand", 1, 1.01, 0, -1)],
-    # 走路：正面角色的"颠步"——每 3 帧一个落脚周期，配左右摆倾
-    "walk_right": [("stand", 1, 1, 0, -2), ("stand", 1, 1, 2.2, -3),
-                   ("stand", 1, 1, 2.2, -2), ("stand", 1, 1, 0, -2),
-                   ("stand", 1, 1, -2.2, -3), ("stand", 1, 1, -2.2, -2)],
+    # 走路：改由 tools/gen_walk_from_photos.py 从 4 帧源图抽卡生成，
+    # 本脚本不再派生（重跑不覆写盘上 sheet），见模块 docstring
     # 被拎着：像挂件一样左右晃
     "dragged": [("stand", 1, 1, 4, 0), ("stand", 1, 1, -4, 0)],
     # 下落：拉长身形 + 小幅摆动（慌）
@@ -203,10 +206,6 @@ def main() -> int:
         frames = [make_frame(bases[src], *p) for src, *p in params]
         sheets[name] = frames
 
-    # walk_left = walk_right 的逐帧水平镜像（朝向约定，见 assets/README.md）
-    sheets["walk_left"] = [f.transpose(Image.FLIP_LEFT_RIGHT)
-                           for f in sheets["walk_right"]]
-
     for name, frames in sheets.items():
         sheet = Image.new("RGBA", (FRAME * len(frames), FRAME), (0, 0, 0, 0))
         for i, f in enumerate(frames):
@@ -214,18 +213,25 @@ def main() -> int:
         sheet.save(ASSETS_DIR / manifest["actions"][name]["file"])
         print(f"  {name}: {len(frames)} 帧 -> {manifest['actions'][name]['file']}")
 
-    # 总览图：灰底（透明 PNG 在黑色查看器里会误判）+ 动作名，供肉眼验收
+    # 总览图：灰底（透明 PNG 在黑色查看器里会误判）+ 动作名，供肉眼验收。
+    # walk 两动作读盘上现成 sheet 拼行（只读不写，生成权在 gen_walk_from_photos）
+    walk_n = manifest["actions"]["walk_right"]["frames"]
+    walk_sheet = Image.open(ASSETS_DIR / manifest["actions"]["walk_right"]["file"])
+    walk_right = [walk_sheet.crop((i * FRAME, 0, (i + 1) * FRAME, FRAME))
+                  for i in range(walk_n)]
+    rows = list(sheets.items()) + [
+        ("walk_right", walk_right),
+        ("walk_left", [f.transpose(Image.FLIP_LEFT_RIGHT) for f in walk_right])]
     label_w = 110
-    max_frames = max(len(f) for f in sheets.values())
+    max_frames = max(len(f) for _, f in rows)
     preview = Image.new("RGB", (label_w + max_frames * FRAME,
-                                len(sheets) * (FRAME + 4) + 4), (96, 96, 96))
+                                len(rows) * (FRAME + 4) + 4), (96, 96, 96))
     draw = ImageDraw.Draw(preview)
     font = ImageFont.load_default()
-    order = list(ACTIONS.keys()) + ["walk_left"]
-    for row, name in enumerate(order):
+    for row, (name, frames) in enumerate(rows):
         y = 4 + row * (FRAME + 4)
         draw.text((6, y + FRAME // 2), name, fill=(255, 255, 255), font=font)
-        for i, f in enumerate(sheets[name]):
+        for i, f in enumerate(frames):
             preview.paste(f, (label_w + i * FRAME, y), f)
     PREVIEW_PATH.parent.mkdir(parents=True, exist_ok=True)
     preview.save(PREVIEW_PATH)

@@ -1,13 +1,22 @@
 # 素材说明
 
-## 当前素材：ChatGPT 单帧源图 + 程序派生微动画（B 方案）
+## 当前素材：ChatGPT 单帧源图 + 程序派生微动画（B 方案）+ 走路抽卡（A 方案）
 
 源图为 `assets/src/stand.jpg`（站立）与 `assets/src/sleep.jpg`（睡觉），
 白底 JPG。运行 `.venv\Scripts\python tools\gen_assets_from_photos.py`
-从这两张单帧派生全部 12 个动作的 sprite sheet（边缘泛洪抠底 → 光晕清理 →
+从这两张单帧派生除 walk 外全部动作的 sprite sheet（边缘泛洪抠底 → 光晕清理 →
 包围盒裁剪 → 128 帧降采样 → 逐动作缩放/旋转/位移微动画 → 横排拼帧），
 并输出总览图 `xinsucai/preview.png` 供肉眼验收。
 Pillow 仅该开发工具使用，运行时加载仍走 PySide6 QImage，不进打包依赖。
+
+走路两动作（2026-09-24 起）改走 A 方案抽卡：源图 `assets/src/walk_v2.jpg`
+（黑底 5 帧横排，第 1 帧是正面站立、工具用 `--skip 1` 忽略，第 2-5 帧为
+朝右走路循环），运行 `.venv\Scripts\python tools\gen_walk_from_photos.py`
+生成 walk_right / walk_left（4 帧 @6fps）并同步 manifest.json 的帧数/帧率。
+该脚本是这两个 sheet 的唯一生成者（黑底泛洪容差比白底紧，见脚本
+docstring）；B 方案脚本重跑时只读盘拼总览、不覆写。日后换走路素材：覆盖
+源图重跑即可（帧数/排版不符时用 `--src` / `--skip` 调整；初代源
+`src/walk.jpg` 保留作参考）。
 
 日后若换成逐动作逐帧源图（A 方案抽卡），保持同样的文件格式替换同名
 PNG、按实际帧数/帧率更新 manifest.json 即可，代码无需改动。
@@ -43,7 +52,7 @@ PNG、按实际帧数/帧率更新 manifest.json 即可，代码无需改动。
    > hair, sleepy relaxed expression, holding a bass guitar, side view,
    > transparent background, clean pixels, limited palette
 
-2. 以定稿图为参考，逐动作生成帧序列（站立呼吸 4 帧 / 走路 6 帧 /
+2. 以定稿图为参考，逐动作生成帧序列（站立呼吸 4 帧 / 走路 4 帧 /
    被拎起 2 帧 / 下落 2 帧 / 被戳反应 2 帧 / 喂食 4 帧 / 睡觉 2 帧 /
    睡眼惺忪 2 帧 / 攀爬 4 帧（侧面朝右向上）/ 顶边坐姿 4 帧 /
    伸懒腰提醒 4 帧），每张拼成横向 sprite sheet

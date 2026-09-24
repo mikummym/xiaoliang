@@ -1,6 +1,6 @@
 # 素材说明
 
-## 当前素材：ChatGPT 单帧源图 + 程序派生微动画（B 方案）+ 走路抽卡（A 方案）
+## 当前素材：ChatGPT 单帧源图 + 程序派生微动画（B 方案）+ 走路抽卡（A 方案）+ 攀爬/坐顶专用管线
 
 源图为 `assets/src/stand.jpg`（站立）与 `assets/src/sleep.jpg`（睡觉），
 白底 JPG。运行 `.venv\Scripts\python tools\gen_assets_from_photos.py`
@@ -17,6 +17,17 @@ Pillow 仅该开发工具使用，运行时加载仍走 PySide6 QImage，不进�
 docstring）；B 方案脚本重跑时只读盘拼总览、不覆写。日后换走路素材：覆盖
 源图重跑即可（帧数/排版不符时用 `--src` / `--skip` 调整；初代源
 `src/walk.jpg` 保留作参考）。
+
+攀爬与坐顶（2026-09-24 起）各有专用管线，源图均为**透明底 PNG**（免抠底）：
+- `climbing`：源图 `assets/src/climbing2.png`（4 帧横排朝右攀爬循环），
+  运行 `.venv\Scripts\python tools\gen_climb_from_photos.py`。内容右对齐
+  （右空 36 列）配套渲染层贴边推出量 CLING_MARGIN=36——居中摆会让手离墙
+  悬空一截，见脚本 docstring
+- `sitting_top`：源图 `assets/src/sit.png`（单帧正面坐姿），运行
+  `.venv\Scripts\python tools\gen_sit_from_photos.py`（4 帧 @4fps 呼吸起伏）。
+  搁板由程序绘制：暖木色横板横贯整帧（v0.1 占位版同语义同配色），伸出屏幕
+  缘的一端被渲染裁剪读作"侧壁探出的小搁板"；板托臀部坐线（LEDGE_TOP=89，
+  验收两轮微调定稿）。单帧源图做不了逐腿晃荡，微动画为绕底部锚点呼吸
 
 日后若换成逐动作逐帧源图（A 方案抽卡），保持同样的文件格式替换同名
 PNG、按实际帧数/帧率更新 manifest.json 即可，代码无需改动。
@@ -38,7 +49,7 @@ PNG、按实际帧数/帧率更新 manifest.json 即可，代码无需改动。
 
 - 动作名固定：`idle` / `walk_left` / `walk_right` / `dragged` / `falling` /
   `poke_react`(2帧@6fps) / `eating`(4帧@6fps) / `sleeping`(2帧@2fps) /
-  `woken`(2帧@3fps) / `climbing`(4帧@8fps) / `sitting_top`(4帧@3fps) /
+  `woken`(2帧@3fps) / `climbing`(4帧@8fps) / `sitting_top`(4帧@4fps) /
   `remind`(4帧@4fps)
 - 朝向约定：角色默认画成朝右；`walk_left` 是 `walk_right` 的水平镜像；
   `climbing` 只画"右壁向上爬"，向下爬 = 帧序倒放、左壁 = 水平镜像

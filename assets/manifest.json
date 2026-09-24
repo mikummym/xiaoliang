@@ -52,7 +52,7 @@
     "sitting_top": {
       "file": "sitting_top.png",
       "frames": 4,
-      "fps": 3
+      "fps": 4
     },
     "remind": {
       "file": "remind.png",

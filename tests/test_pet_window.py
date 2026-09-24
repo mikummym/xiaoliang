@@ -55,8 +55,6 @@ def _run_fall_from_top(machine, window):
     machine.y = 0.0
     machine.state = State.SITTING_TOP
     machine._timer = 0.12          # 坐几帧就跳
-    window._in_sitting = True      # 跳过姿势掷骰，保证确定性
-    window._sit_facing_wall = True
     machine._rng = random.Random(2)  # random()=0.956 ≥0.5 → 跳下分支
     states = []
     for _ in range(80):
@@ -124,8 +122,6 @@ def test_climb_down_landing_has_no_horizontal_teleport(app, sprites):
     machine.y = 0.0
     machine.state = State.SITTING_TOP
     machine._timer = 0.12          # 坐几帧就起身
-    window._in_sitting = True      # 跳过姿势掷骰，保证确定性
-    window._sit_facing_wall = True
     machine._rng = random.Random(1)  # random()=0.134 <0.5 → 原路爬下分支
     states = []
     for _ in range(400):           # 272px @40px/s ≈ 205 tick，留余量

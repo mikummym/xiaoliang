@@ -9,8 +9,10 @@ v0.2 新增（spec §2.3）：
 - 右键菜单：喂食（吃撑置灰）/ 状态展示 / 暂停·恢复 / 退出
 - 悬停 tooltip：每秒刷新"心情 😊N · 饱腹 🍚N · 状态中文"
 - 攀爬渲染：爬下 = 帧序倒放，左壁 = 水平镜像（get_frame kwargs）
-- 坐顶姿势：面向墙 / 背靠墙两种随机姿势（背靠墙水平镜像复用同一组
-  sitting_top 帧，不新增任何素材）
+- 坐顶渲染：正面坐姿 + 横贯整帧的搁板（伸出屏幕缘的一端被裁剪，读作
+  侧壁探出的小搁板）；左壁镜像仅为把右对齐内容翻成左对齐配套推出量，
+  正面姿势近对称、镜像不改姿势观感（2026-09-24 换正式坐姿素材后，
+  原"面向墙/背靠墙两姿势随机"取消——正面坐姿镜像前后同像，随机无意义）
 
 v0.3 新增（spec §4.2 等）：
 - REMINDING 渲染：久坐提醒/整点报时播"伸懒腰"动画，播完回原状态
@@ -22,7 +24,6 @@ v0.3 新增（spec §4.2 等）：
 不存在"墨水画到邻屏"的问题。
 """
 import math
-import random
 import time
 
 from PySide6.QtCore import QElapsedTimer, QPoint, Qt, QTimer
@@ -43,10 +44,6 @@ POKE_MAX_PX = 5.0
 # 悬空在离屏幕边缘 36 逻辑像素处。把窗口向墙外推出这段空白（×scale、
 # ×climb_wall 方向），身体就正好贴住屏幕边缘。
 CLING_MARGIN_LOGICAL = 36
-
-# 背靠墙坐姿的贴边推出量（逻辑像素）：坐姿与攀爬共用同一居中素材，
-# 左右空白对称，推出量与 CLING_MARGIN_LOGICAL 相同。
-CLING_MARGIN_BACK = 36
 
 # 状态 → 动作名（WALKING 按方向细分、CLIMBING 的倒放/镜像单独处理）
 STATE_ACTION = {
@@ -103,10 +100,10 @@ class PetWindow(QWidget):
         self._press_ts = 0.0
         self._press_pos: QPoint | None = None
         self._drag_moved = False
-        # 贴边推出列数（逻辑像素，0 = 不贴边）：用数值而非布尔，因为顶边
-        # 两种坐姿推出量不同（面向墙 21 / 背靠墙 17），且在壁上被戳/跳下
-        # 的瞬间 machine.x 仍吸附在墙边，必须跨帧沿用同一推出量，立即归零
-        # 窗口会横跳 K*scale 物理像素
+        # 贴边推出列数（逻辑像素，0 = 不贴边）：用数值而非布尔，因为推出量
+        # 要在贴边（36）与自由（0）两种世界之间连续过渡（跳下按下落进度归
+        # 零、爬下落地前渐出），且在壁上被戳/跳下的瞬间 machine.x 仍吸附在
+        # 墙边，必须跨帧沿用同一推出量，立即归零窗口会横跳 K*scale 物理像素
         self._cling_margin = 0
         # 下落起点（起跳瞬间的 y 与推出量）：None = 不在 FALLING。供"推出量
         # 按下落进度平滑归零"使用，见 _on_tick
@@ -114,11 +111,6 @@ class PetWindow(QWidget):
         self._fall_start_margin = 0.0
         # ── v0.3 注入：声音引擎（戳音效）。sound 可为 None（测试/静音环境）
         self._sound = sound
-        # 本次坐顶的姿势：True=面向墙、False=背靠墙，进入 SITTING_TOP 的
-        # 瞬间随机掷一次，坐姿期间保持不变
-        self._sit_facing_wall = True
-        # 是否已处于坐姿：检测"进入坐姿的瞬间"（上升沿），保证只掷一次
-        self._in_sitting = False
         # tooltip 刷新计时（毫秒累计，每满 1000 刷一次）
         self._tooltip_ms = 0
         self._refresh_tooltip()
@@ -185,12 +177,6 @@ class PetWindow(QWidget):
         # 有效——SITTING_TOP 只会从 CLIMBING 到顶进入，记录的是哪面墙
         climbing = self.machine.state is State.CLIMBING
         sitting = self.machine.state is State.SITTING_TOP
-        # 进入坐姿的瞬间掷一次姿势（面向墙/背靠墙 50/50），坐姿期间保持
-        if sitting and not self._in_sitting:
-            self._sit_facing_wall = random.random() < 0.5
-            self._in_sitting = True
-        elif not sitting:
-            self._in_sitting = False
         # 记录下落起点：进入 FALLING 的瞬间记下起跳 y 与起跳推出量，供下面
         # "推出量按进度平滑归零"使用；离开 FALLING 即复位，再次进入（如空中
         # 被戳播完反应回 FALLING）从当前值续收，保证处处连续
@@ -201,14 +187,11 @@ class PetWindow(QWidget):
             self._fall_start_y = None
         # 镜像规则（真值表）：
         # - 攀爬：左壁（climb_wall<0）镜像，右壁原样——面向墙
-        # - 坐姿·面向墙：与攀爬同向，左壁才镜像（脸/鞋尖朝墙）
-        # - 坐姿·背靠墙：与攀爬反向，右壁才镜像——镜像后后背落在第 46 列，
-        #   推出 17 列（CLING_MARGIN_BACK）后背正好贴住屏幕右缘；左壁则
-        #   不镜像，原帧后背就在第 17 列，同样推出 17 列贴住屏幕左缘
-        if climbing:
+        # - 坐姿：与攀爬同向，左壁才镜像。镜像在这里不是换姿势（正面坐姿近
+        #   对称，镜像前后同像），而是把右对齐的内容翻成左对齐：左壁推出
+        #   -36 后内容左缘才能正好贴住屏幕左缘（与攀爬同一套贴边几何）
+        if climbing or sitting:
             mirror = self.machine.climb_wall < 0
-        elif sitting:
-            mirror = (self._sit_facing_wall == (self.machine.climb_wall < 0))
         else:
             mirror = False
         self._pixmap = self.sprites.get_frame(
@@ -238,12 +221,10 @@ class PetWindow(QWidget):
                 # 而非瞬移（同坐顶姿势切换 8px 的既有豁免，v0.2 起如此）
                 self._cling_margin = CLING_MARGIN_LOGICAL
         elif sitting:
-            # 坐顶按姿势取推出量：面向墙 = 鞋尖/脸在第 42 列贴边（21），
-            # 背靠墙 = 镜像帧后背在第 46 列贴边（17）。爬→坐切换若掷中
-            # 背靠墙，推出量 21→17 造成的 8 物理像素位移与换姿势同帧
-            # 发生，被姿势切换本身掩盖，看起来不突兀
-            self._cling_margin = (CLING_MARGIN_LOGICAL if self._sit_facing_wall
-                                  else CLING_MARGIN_BACK)
+            # 坐顶恒定推出 36：素材内容右空 36 列（与攀爬同一套贴边几何），
+            # 搁板横贯整帧、伸出屏幕缘的一端被裁剪读作侧壁探出的板；爬→坐
+            # 切换推出量不变（攀爬也是 36），无同帧横跳
+            self._cling_margin = CLING_MARGIN_LOGICAL
         elif self.machine.state is State.FALLING:
             # 推出量按下落进度平滑归零：起跳帧仍沿用贴边推出量（与坐姿/攀爬
             # 姿势连续），下落中向内收（观感=蹬离墙边跳下），落地瞬间正好 0

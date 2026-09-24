@@ -16,15 +16,17 @@ v0.3 新增（spec §4.2 等）：
 - REMINDING 渲染：久坐提醒/整点报时播"伸懒腰"动画，播完回原状态
 - 戳音效：machine.poke() 受理（返回 True）才播音效，暂停时 poke 拒绝
   返回 False 即静音，保证"暂停 = 完全无响应"语义
-- 多屏贴边 setMask 裁剪：贴边侧有相邻屏幕时 Windows 不按单屏边界裁剪
-  窗口，推出的搁板端头/脚部墨水会画到邻屏——用 setMask 裁掉越界条带
+
+2026-09-24 调整：目标环境为单屏，多屏支持阉割——移除贴边 setMask 裁剪
+（v0.3 修复③）与 mask_edges 注入；单屏时窗口越出屏幕边界由系统自然裁剪，
+不存在"墨水画到邻屏"的问题。
 """
 import math
 import random
 import time
 
 from PySide6.QtCore import QElapsedTimer, QPoint, Qt, QTimer
-from PySide6.QtGui import QCursor, QPainter, QPixmap, QRegion
+from PySide6.QtGui import QCursor, QPainter, QPixmap
 from PySide6.QtWidgets import QMenu, QToolTip, QWidget
 
 from .sprite import SpriteManager
@@ -79,7 +81,7 @@ STATE_ZH = {
 class PetWindow(QWidget):
     def __init__(self, machine: PetStateMachine, sprites: SpriteManager,
                  origin: QPoint | None = None, on_quit=None, *,
-                 sound=None, mask_edges=None):
+                 sound=None):
         super().__init__(None,
                          Qt.WindowType.FramelessWindowHint
                          | Qt.WindowType.WindowStaysOnTopHint
@@ -106,15 +108,12 @@ class PetWindow(QWidget):
         # 的瞬间 machine.x 仍吸附在墙边，必须跨帧沿用同一推出量，立即归零
         # 窗口会横跳 K*scale 物理像素
         self._cling_margin = 0
-        # ── v0.3 注入：声音引擎（戳音效）与需 mask 裁剪的边缘集合 ──
-        # sound 可为 None（测试/静音环境）；mask_edges = 贴边侧有相邻
-        # 屏幕的边缘（{-1,1} 子集），由 screen_info 计算、main.py 注入
+        # 下落起点（起跳瞬间的 y 与推出量）：None = 不在 FALLING。供"推出量
+        # 按下落进度平滑归零"使用，见 _on_tick
+        self._fall_start_y: float | None = None
+        self._fall_start_margin = 0.0
+        # ── v0.3 注入：声音引擎（戳音效）。sound 可为 None（测试/静音环境）
         self._sound = sound
-        self._mask_edges = set(mask_edges or ())
-        # mask 是否已设置：只在需要↔不需要切换或推出量变化时调
-        # setMask/clearMask（窗口重组合有成本，不能每帧做）
-        self._mask_on = False
-        self._mask_margin_px = -1
         # 本次坐顶的姿势：True=面向墙、False=背靠墙，进入 SITTING_TOP 的
         # 瞬间随机掷一次，坐姿期间保持不变
         self._sit_facing_wall = True
@@ -147,14 +146,6 @@ class PetWindow(QWidget):
         if self.machine.state is State.WALKING:
             return "walk_right" if self.machine.direction > 0 else "walk_left"
         return STATE_ACTION[self.machine.state]
-
-    def set_mask_edges(self, edges: set) -> None:
-        """屏幕热插拔时刷新需 mask 的边缘集合（main.py 调，spec §4.2）。"""
-        self._mask_edges = set(edges)
-        if self._mask_on:            # 强制下次 tick 重算 mask
-            self.clearMask()
-            self._mask_on = False
-            self._mask_margin_px = -1
 
     def _to_global(self, x: float, y: float) -> QPoint:
         """状态机坐标（工作区原点）→ 全局屏幕坐标。"""
@@ -200,6 +191,14 @@ class PetWindow(QWidget):
             self._in_sitting = True
         elif not sitting:
             self._in_sitting = False
+        # 记录下落起点：进入 FALLING 的瞬间记下起跳 y 与起跳推出量，供下面
+        # "推出量按进度平滑归零"使用；离开 FALLING 即复位，再次进入（如空中
+        # 被戳播完反应回 FALLING）从当前值续收，保证处处连续
+        if self.machine.state is State.FALLING and self._fall_start_y is None:
+            self._fall_start_y = self.machine.y
+            self._fall_start_margin = float(self._cling_margin)
+        elif self.machine.state is not State.FALLING:
+            self._fall_start_y = None
         # 镜像规则（真值表）：
         # - 攀爬：左壁（climb_wall<0）镜像，右壁原样——面向墙
         # - 坐姿·面向墙：与攀爬同向，左壁才镜像（脸/鞋尖朝墙）
@@ -221,8 +220,23 @@ class PetWindow(QWidget):
         # 右壁推出屏幕右缘、左壁推出左缘），手/鞋尖/后背正好搭在屏幕边缘。
         # 纯渲染层偏移，不改状态机坐标；三段逻辑决定推出列数：
         if climbing:
-            # 攀爬：墙侧第 43..63 共 21 列空白，推出 21 列手搭屏幕边缘
-            self._cling_margin = CLING_MARGIN_LOGICAL
+            if self.machine.climb_direction == "down":
+                # 爬下：大部分行程保持满推出（身体贴墙），落地前最后一段
+                # 渐出、触地瞬间正好 0——否则落地回 IDLE 帧横向瞬移
+                # K*scale（与跳下修复同族，回归测试 tests/test_pet_window.py）。
+                # 渐出距离与推出量同值（36 逻辑 px × scale）：水平内收与
+                # 竖直下落 1:1，观感 = 自然的"松墙落脚"斜迹而不是剥离墙面；
+                # 公式无状态（只依赖当前 y），爬下途中被戳/喂食打断后
+                # 恢复攀爬时推出量无缝续接
+                fade_px = max(1.0, CLING_MARGIN_LOGICAL * self.sprites.scale)
+                dist = float(self.machine.floor_y) - self.machine.y
+                self._cling_margin = CLING_MARGIN_LOGICAL * min(
+                    1.0, max(0.0, dist) / fade_px)
+            else:
+                # 向上爬：全程贴墙，推出量恒定。入爬第一帧推出量 0→满值
+                # 与走路/挣扎→攀爬的姿势切换同帧发生，观感是"抓住墙缘"
+                # 而非瞬移（同坐顶姿势切换 8px 的既有豁免，v0.2 起如此）
+                self._cling_margin = CLING_MARGIN_LOGICAL
         elif sitting:
             # 坐顶按姿势取推出量：面向墙 = 鞋尖/脸在第 42 列贴边（21），
             # 背靠墙 = 镜像帧后背在第 46 列贴边（17）。爬→坐切换若掷中
@@ -230,50 +244,31 @@ class PetWindow(QWidget):
             # 发生，被姿势切换本身掩盖，看起来不突兀
             self._cling_margin = (CLING_MARGIN_LOGICAL if self._sit_facing_wall
                                   else CLING_MARGIN_BACK)
-        elif self.machine.state in (State.POKE_REACT, State.FALLING,
-                                    State.EATING, State.REMINDING):
-            # 在壁上被戳/空中进食/壁上被提醒/跳下的瞬间 machine.x 仍吸附
-            # 在墙边，推出量必须沿用进入前的值不能归零，否则窗口一帧横跳
-            # K*scale；落地/播完回 IDLE 等地面状态后由下一分支清除。
+        elif self.machine.state is State.FALLING:
+            # 推出量按下落进度平滑归零：起跳帧仍沿用贴边推出量（与坐姿/攀爬
+            # 姿势连续），下落中向内收（观感=蹬离墙边跳下），落地瞬间正好 0
+            # ——旧逻辑"FALLING 保留、落地回 IDLE 一帧归零"会让窗口在落地帧
+            # 横向瞬移 K*scale（回归测试 tests/test_pet_window.py）
+            span = max(1.0, float(self.machine.floor_y) - self._fall_start_y)
+            progress = min(1.0, max(
+                0.0, (self.machine.y - self._fall_start_y) / span))
+            self._cling_margin = self._fall_start_margin * (1.0 - progress)
+        elif self.machine.state in (State.POKE_REACT, State.EATING,
+                                    State.REMINDING):
+            # 在壁上被戳/空中进食/壁上被提醒的瞬间 machine.x 仍吸附在墙边，
+            # 推出量必须沿用进入前的值不能归零，否则窗口一帧横跳 K*scale。
             # EATING/REMINDING 发生在地面时 _cling_margin 本来就是 0，
             # pass 保持不变，无副作用
             pass
         else:
-            # IDLE/WALKING/DRAGGED/SLEEPING/EATING/WOKEN：不贴边，推出量归零
+            # IDLE/WALKING/DRAGGED/SLEEPING/WOKEN：不贴边，推出量归零
             self._cling_margin = 0
-        # POKE_REACT/FALLING 素材的角色占帧内第 22..42 逻辑列：推出量为
-        # 21 或 17 时，两壁可见带（右壁 0..63-K、左壁镜像前 K..63）都完整
-        # 覆盖 22..42，保持偏移不会把角色裁掉，无需额外处理
+        # 起跳头几帧推出量仍接近满值，下落姿势最右列会短暂越出屏幕缘 1-2
+        # 列，随推出量收敛很快回到屏内——比旧版"全程贴缘外+落地瞬移"好
         cling_off = (self._cling_margin * self.sprites.scale
                      * self.machine.climb_wall)
-        # ── v0.3 修复③（spec §4.2）：贴边侧有相邻屏幕时，Windows 不按
-        # 单屏边界裁剪窗口，推出的搁板端头/脚部墨水会画到邻屏上——用
-        # setMask 裁掉越界条带。只在边缘归属/推出量变化时重设 mask，
-        # 不是每帧操作。宽度 = 推出逻辑列 × 素材放大 × 设备像素比
-        # （widget 坐标在高 DPI 下按设备像素解释，100% 缩放时 dpr=1）
-        need_mask = (self._cling_margin > 0
-                     and self.machine.climb_wall in self._mask_edges)
-        if need_mask:
-            margin_px = int(round(self._cling_margin * self.sprites.scale
-                                  * self.devicePixelRatioF()))
-            if not self._mask_on or margin_px != self._mask_margin_px:
-                w, h = int(self.width() * self.devicePixelRatioF()), \
-                    int(self.height() * self.devicePixelRatioF())
-                if self.machine.climb_wall > 0:
-                    # 右壁：窗口右侧 margin_px 越界 → 裁掉右边条带
-                    region = QRegion(0, 0, w - margin_px, h)
-                else:
-                    # 左壁：裁掉左边条带
-                    region = QRegion(margin_px, 0, w - margin_px, h)
-                self.setMask(region)
-                self._mask_on = True
-                self._mask_margin_px = margin_px
-        elif self._mask_on:
-            self.clearMask()
-            self._mask_on = False
-            self._mask_margin_px = -1
         self.move(self._to_global(self.machine.x, self.machine.y)
-                  + QPoint(cling_off, 0))
+                  + QPoint(int(round(cling_off)), 0))
         # tooltip 每秒刷新：数值随时间衰减，刷太快没有意义
         self._tooltip_ms += int(dt * 1000)
         if self._tooltip_ms >= 1000:

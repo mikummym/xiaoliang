@@ -14,6 +14,11 @@ v0.3 扩展（spec: 2026-09-22-xiaoliang-v0.3-toy-design.md）：
 - 暂停 = 整体冻结（事件无响应、drag_end 直接落地）
 - 屏幕穿越意图（_walk_intent="wrap"）：走出屏外瞬移到对端走回
 - 新状态 REMINDING：久坐提醒/整点报时播伸懒腰动画，播完回原状态接续剩余计时
+
+2026-09-24 调整（目标环境为单屏，多屏支持阉割）：
+- 拖到贴左/右屏幕边缘松手 → 立即吸附该墙向上爬（手动 100% 触发攀爬，
+  不再只能等 IDLE 掷骰）；阈值 = pet_width × EDGE_CLIMB_ZONE_RATIO
+- 移除 wrap_edges/set_wrap_edges（邻屏检测）：穿越恒允许左右两侧
 """
 import random
 from dataclasses import dataclass
@@ -21,6 +26,10 @@ from datetime import datetime
 from enum import Enum, auto
 
 from .status import PetStatus
+
+# 拖拽松手触发爬墙的边缘阈值（占 pet_width 的比例）：松手点距左/右缘
+# ≤ 该比例 × pet_width 视为"贴边"。随素材缩放自适应，无需按分辨率调
+EDGE_CLIMB_ZONE_RATIO = 0.25
 
 
 class State(Enum):
@@ -74,7 +83,6 @@ class PetStateMachine:
                  climb_chance: float = 0.15,
                  climb_low_mood_factor: float = 0.3,
                  wrap_chance: float = 0.08,
-                 wrap_edges=None,
                  hungry_walk_factor: float = 0.6,
                  sit_range: tuple[float, float] = (10.0, 30.0),
                  woken_range: tuple[float, float] = (3.0, 6.0),
@@ -98,10 +106,9 @@ class PetStateMachine:
         self.climb_speed = climb_speed
         self.climb_chance = climb_chance
         self.climb_low_mood_factor = climb_low_mood_factor
-        # ── v0.3 穿越（spec §1.4）：概率与可穿越边缘集合（GUI 注入，
-        # 元素 -1=左缘 / 1=右缘；某侧边缘外有相邻屏幕则该侧不可穿越）──
+        # ── v0.3 穿越（spec §1.4）：IDLE 出门掷骰的概率之一。2026-09-24
+        # 起单屏化：不再有"邻屏侧不可穿越"的限制，左右两侧恒可穿越 ──
         self.wrap_chance = wrap_chance
-        self.wrap_edges = {e for e in (wrap_edges or ()) if e in (-1, 1)}
         # 穿越阶段："out"=正走出屏幕 / "in"=瞬移后正走回屏内 / None=不在穿越
         self._wrap_phase: str | None = None
         self.hungry_walk_factor = hungry_walk_factor
@@ -161,10 +168,6 @@ class PetStateMachine:
         self.paused = paused
         for callback in self._pause_listeners:
             callback(paused)
-
-    def set_wrap_edges(self, edges) -> None:
-        """更新可穿越边缘集合（屏幕热插拔时由 GUI 刷新，spec §1.4）。"""
-        self.wrap_edges = {e for e in edges if e in (-1, 1)}
 
     def in_sleep_window(self) -> bool:
         """注入时钟的当前时刻是否落在配置的睡眠时段内。"""
@@ -357,11 +360,16 @@ class PetStateMachine:
         self.y = min(max(0.0, y), self.bounds.height - self.pet_height)
 
     def drag_end(self) -> None:
-        """松手 → 下落。
+        """松手 → 贴左/右屏幕边缘则立即爬墙，否则下落。
 
         v0.3 修复④（spec §1.3）：暂停中松手不再悬停半空——直接落到
         正下方地面并置 IDLE（暂停渲染本就播 idle 帧，视觉上是"被放下
         后乖乖站好"），恢复暂停后无异常状态需要收口。
+
+        2026-09-24 新增：松手点距左/右缘 ≤ EDGE_CLIMB_ZONE_RATIO ×
+        pet_width → 吸附该侧墙面向上爬（从松手高度起爬，到顶进
+        SITTING_TOP 走既有 50/50 下墙分支）——给用户一个手动 100%
+        触发攀爬的入口。暂停中不触发（暂停 = 完全冻结，仍走修复④）。
         """
         if self.state is State.DRAGGED:
             if self.paused:
@@ -372,8 +380,17 @@ class PetStateMachine:
                 self.state = State.IDLE
                 self._timer = self._rng.uniform(*self.idle_range)
                 return
-            self.state = State.FALLING
-            self.vy = 0.0
+            max_x = float(self.bounds.width - self.pet_width)
+            zone = self.pet_width * EDGE_CLIMB_ZONE_RATIO
+            if self.x <= zone:
+                self.climb_wall = -1
+                self._start_climbing("up")   # 内部吸附 x=0、清 vy
+            elif self.x >= max_x - zone:
+                self.climb_wall = 1
+                self._start_climbing("up")   # 内部吸附 x=max_x
+            else:
+                self.state = State.FALLING
+                self.vy = 0.0
 
     # ── 内部：状态进入与推进 ───────────────────────────────────────
 
@@ -423,8 +440,8 @@ class PetStateMachine:
 
     def _decide_walk_or_climb(self) -> None:
         """发呆计时到点后掷骰子，三岔（spec §1.4）：
-        攀爬 climb_chance（心情差 ×0.3）→ 穿越 wrap_chance（仅当存在
-        可穿越边缘时参与，否则概率并入散步）→ 普通散步。
+        攀爬 climb_chance（心情差 ×0.3）→ 穿越 wrap_chance → 普通散步。
+        单屏化后穿越恒可参与（不再依赖邻屏检测出的 wrap_edges）。
         """
         chance = self.climb_chance
         if self.status.is_bored:         # 心情差（<20）：没兴致玩，概率 ×0.3
@@ -433,7 +450,7 @@ class PetStateMachine:
         if roll < chance:
             self._start_climb_sequence()
             return
-        if self.wrap_edges and roll < chance + self.wrap_chance:
+        if roll < chance + self.wrap_chance:
             self._start_wrap_sequence()
             return
         self._start_walking()
@@ -461,8 +478,8 @@ class PetStateMachine:
         self._timer = dist / self._effective_walk_speed() + 1.0
 
     def _start_wrap_sequence(self) -> None:
-        """穿越意图：选定一个可穿越边缘方向走过去，到缘不停直接走出屏幕。"""
-        edge = self._rng.choice(sorted(self.wrap_edges))   # sorted 保证可测
+        """穿越意图：随机选左/右方向走过去，到缘不停直接走出屏幕。"""
+        edge = self._rng.choice((-1, 1))   # 单屏：两侧恒可穿越
         self.direction = edge
         self._walk_intent = "wrap"
         self._wrap_phase = "out"

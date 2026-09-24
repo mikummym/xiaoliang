@@ -12,7 +12,6 @@ from xiaoliang.config import (default_config_path, load_config,
                               needs_migration, save_config)
 from xiaoliang.pet_window import PetWindow
 from xiaoliang.reminder import ReminderLogic, ReminderService
-from xiaoliang.screen_info import wrap_and_cling_edges
 from xiaoliang.sound import SoundEngine
 from xiaoliang.sprite import AssetError, SpriteManager
 from xiaoliang.state_machine import Bounds, PetStateMachine
@@ -87,8 +86,6 @@ def main() -> int:
     area = QGuiApplication.primaryScreen().availableGeometry()
     origin = area.topLeft()  # 工作区左上角（任务栏在顶/左时非零）
     fw, fh = sprites.frame_size()
-    # ── v0.3：屏幕布局 → 可穿越边缘（无邻屏侧）与贴边 mask 边缘（有邻屏侧）
-    wrap_edges, cling_mask_edges = wrap_and_cling_edges()
     machine = PetStateMachine(
         Bounds(area.width(), area.height()), fw, fh,
         walk_speed=float(cfg["walk_speed"]),
@@ -97,7 +94,6 @@ def main() -> int:
         sleep_start=cfg["sleep_start"],
         sleep_end=cfg["sleep_end"],
         wrap_chance=float(cfg["wrap_chance"]),
-        wrap_edges=wrap_edges,
         on_status_change=save_status)   # 戳/喂食数值变化后即时落盘
     machine.set_paused(bool(cfg["paused"]))
 
@@ -106,7 +102,7 @@ def main() -> int:
                         sounds_dir=assets_dir() / "sounds" / "poke")
 
     window = PetWindow(machine, sprites, origin=origin, on_quit=app.quit,
-                       sound=sound, mask_edges=cling_mask_edges)
+                       sound=sound)
     window.move(origin.x() + int(machine.x), origin.y() + int(machine.y))
     window.show()
 
@@ -144,17 +140,6 @@ def main() -> int:
 
     reminders = ReminderService(logic, on_reminder)
     reminders.start()
-
-    # ── v0.3：显示器热插拔 → 刷新穿越/mask 边缘（spec §4.1） ──
-    def refresh_screens(*_args) -> None:
-        wrap_now, mask_now = wrap_and_cling_edges()
-        # set_wrap_edges/set_mask_edges 不容 None（会 TypeError），故传
-        # wrap_and_cling_edges() 返回的 set（可能为空集，但绝非 None）
-        machine.set_wrap_edges(wrap_now)
-        window.set_mask_edges(mask_now)
-
-    app.screenAdded.connect(refresh_screens)
-    app.screenRemoved.connect(refresh_screens)
 
     # 定时保存数值（每 60 秒）+ 退出时兜底保存
     save_timer = QTimer()

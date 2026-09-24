@@ -416,6 +416,60 @@ def test_drag_end_while_running_still_falls():
     assert m.state is State.FALLING
 
 
+# ── 2026-09-24：拖到贴屏幕边缘松手 → 立即爬墙（手动 100% 触发攀爬） ──
+
+def test_drag_release_at_left_edge_climbs():
+    m = make_machine()
+    m.drag_start()
+    m.drag_move(0, 200)                  # 紧贴左缘
+    m.drag_end()
+    assert m.state is State.CLIMBING
+    assert m.climb_wall == -1
+    assert m.climb_direction == "up"
+    assert m.x == 0.0                    # 吸附到墙面
+    assert m.y == 200                    # 从松手高度起爬
+
+
+def test_drag_release_at_right_edge_climbs():
+    m = make_machine()
+    m.drag_start()
+    m.drag_move(800 - 64, 100)           # 紧贴右缘
+    m.drag_end()
+    assert m.state is State.CLIMBING
+    assert m.climb_wall == 1
+    assert m.x == 800 - 64
+    assert m.y == 100
+
+
+def test_drag_release_within_edge_zone_climbs():
+    """不必严丝合缝：距边缘 25%×pet_width（=16px）以内都触发。"""
+    m = make_machine()
+    m.drag_start()
+    m.drag_move(10, 300)                 # 10 < 16 → 左壁
+    m.drag_end()
+    assert m.state is State.CLIMBING
+    assert m.climb_wall == -1
+
+
+def test_drag_release_just_outside_zone_falls():
+    m = make_machine()
+    m.drag_start()
+    m.drag_move(17, 300)                 # 17 > 16 → 阈值外，照旧下落
+    m.drag_end()
+    assert m.state is State.FALLING
+
+
+def test_drag_release_at_edge_while_paused_still_lands():
+    """暂停 = 完全冻结：贴边松手也不爬，维持 v0.3 修复④的落地收口。"""
+    m = make_machine()
+    m.set_paused(True)
+    m.drag_start()
+    m.drag_move(0, 200)
+    m.drag_end()
+    assert m.state is State.IDLE
+    assert m.y == 600 - 64
+
+
 # ── v0.2：攀爬线（spec §2.2） ─────────────────────────────────────
 
 def test_climb_walks_to_nearest_edge_then_climbs():
@@ -567,9 +621,11 @@ def test_hungry_slows_walking():
 
 def test_low_mood_reduces_climb_chance():
     # 心情 10（<20）→ 攀爬概率 0.15×0.3 = 0.045
+    # wrap_chance=0：单屏化后穿越恒参与掷骰（0.1 会落进穿越区间），
+    # 置零隔离出"攀爬概率被打折"这一被测行为
     bored = PetStatus(mood=10.0)
     m = make_machine(status=bored, rng=FakeRandom(random_value=0.1),
-                     start_x=400)
+                     start_x=400, wrap_chance=0.0)
     m.tick(1.1)                          # 0.1 > 0.045 → 不爬，普通溜达
     assert m.state is State.WALKING
     assert m._walk_intent is None
@@ -607,30 +663,21 @@ def test_pause_listener_notified():
     assert seen == [True, False]
 
 
-# ── v0.3 新功能⑥：屏幕穿越（spec §1.4） ────────────────────────────
+# ── v0.3 新功能⑥：屏幕穿越（spec §1.4）──
+# 2026-09-24 起目标环境为单屏：多屏邻屏检测已移除，穿越恒允许左右两侧
 
 def test_decide_can_choose_wrap():
     # random_value 0.20 落在 [climb 0.15, 0.15+0.08) → 穿越分支
-    m = make_machine(rng=FakeRandom(choice_value=-1, random_value=0.20),
-                     wrap_edges={-1, 1})
+    m = make_machine(rng=FakeRandom(choice_value=-1, random_value=0.20))
     m.tick(1.1)                        # IDLE 出门掷骰
     assert m.state is State.WALKING
     assert m._walk_intent == "wrap"
-    assert m.direction == -1           # 选中的可穿越边缘方向
-
-
-def test_wrap_skipped_when_no_edges():
-    """wrap_edges 为空：穿越概率并入普通散步。"""
-    m = make_machine(rng=FakeRandom(choice_value=-1, random_value=0.20),
-                     wrap_edges=set())
-    m.tick(1.1)
-    assert m.state is State.WALKING
-    assert m._walk_intent is None      # 普通散步
+    assert m.direction == -1           # 选中的穿越方向
 
 
 def test_wrap_full_cycle_left_exit_right_enter():
     m = make_machine(rng=FakeRandom(choice_value=-1, random_value=0.20),
-                     wrap_edges={-1, 1}, start_x=30)
+                     start_x=30)
     m.tick(1.1)                        # → WALKING wrap 向左（speed 100）
     m.tick(0.5)                        # x = -20，尚未整体没入（> -64）
     assert m._walk_intent == "wrap"
@@ -644,7 +691,7 @@ def test_wrap_full_cycle_left_exit_right_enter():
 
 def test_wrap_right_exit_left_enter():
     m = make_machine(rng=FakeRandom(choice_value=1, random_value=0.20),
-                     wrap_edges={-1, 1}, start_x=800 - 64 - 10)
+                     start_x=800 - 64 - 10)
     m.tick(1.1)                        # → wrap 向右
     m.tick(0.9)                        # x = 744+90=834 ≥ 800 → 瞬移 x=-64
     assert m.x == -64.0
@@ -656,7 +703,7 @@ def test_sleep_window_during_wrap_clamps_into_view():
     """穿越途中（屏外）到点睡觉：位置钳回工作区，不能睡在屏幕外。"""
     clock = FakeClock(dtime(12, 0))
     m = make_machine(rng=FakeRandom(choice_value=-1, random_value=0.20),
-                     wrap_edges={-1, 1}, clock=clock, start_x=30)
+                     clock=clock, start_x=30)
     m.tick(1.1)
     m.tick(1.0)                        # x = -70 ≤ -64 → 瞬移到 x=800（屏外）
     assert m.x == 800.0
@@ -664,12 +711,6 @@ def test_sleep_window_during_wrap_clamps_into_view():
     m.tick(0.1)
     assert m.state is State.SLEEPING
     assert m.x == 800 - 64             # 已钳回工作区右界
-
-
-def test_set_wrap_edges_filters_invalid():
-    m = make_machine()
-    m.set_wrap_edges({-1, 0, 5})
-    assert m.wrap_edges == {-1}
 
 
 # ── v0.3 新功能⑦⑧配套：REMINDING（spec §1.5） ─────────────────────

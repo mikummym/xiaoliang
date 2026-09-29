@@ -12,9 +12,11 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # 必须在 Qt 导入前设置
 
 import pytest
-from PySide6.QtCore import QPoint
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+from PySide6.QtGui import QMouseEvent
+from PySide6.QtTest import QTest
 
-from xiaoliang.pet_window import PetWindow
+from xiaoliang.pet_window import POKE_MAX_MS, PetWindow
 from xiaoliang.sprite import SpriteManager
 from xiaoliang.state_machine import Bounds, PetStateMachine, State
 
@@ -134,3 +136,64 @@ def test_climb_down_landing_has_no_horizontal_teleport(app, sprites):
 
     jumps = [abs(b - a) for a, b in zip(xs, xs[1:])]
     assert max(jumps) <= 3, f"逐帧水平位移峰值 {max(jumps)}px，存在瞬移"
+
+
+# ── 延迟提交拖拽回归（2026-09-29，用户反馈"戳时会闪一下拎起动画"）──────
+# 旧版按下即 drag_start() 进 DRAGGED 播"被拎着"帧，短戳也会闪。改为位移
+# 超阈值或按住超时才提交；下面三测锁死这三条路径。
+
+def _mev(type_, local: QPoint, glob: QPoint,
+         button=Qt.MouseButton.LeftButton) -> QMouseEvent:
+    """构造喂给 pet_window handler 的鼠标事件（位置全可控，offscreen 可靠）。"""
+    return QMouseEvent(type_, QPointF(local), QPointF(glob), button, button,
+                       Qt.KeyboardModifier.NoModifier)
+
+
+def _idle_window(app, sprites):
+    machine = PetStateMachine(Bounds(1920, 1080), *sprites.frame_size())
+    machine.state = State.IDLE
+    window = PetWindow(machine, sprites, origin=QPoint(0, 0))
+    window.show()
+    return machine, window
+
+
+def test_quick_poke_never_enters_dragged(app, sprites):
+    """短戳（按下立即松手、无位移）全程不进 DRAGGED，不闪拎起，落 POKE_REACT。"""
+    machine, window = _idle_window(app, sprites)
+    tl = window.frameGeometry().topLeft()
+    local = QPoint(32, 32)
+    glob = tl + local
+
+    window.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, local, glob))
+    # 按下瞬间：还没提交拖拽，不该是 DRAGGED / 播拎起帧
+    assert machine.state is not State.DRAGGED
+    assert window.current_action() != "dragged"
+    window.mouseReleaseEvent(_mev(QEvent.Type.MouseButtonRelease, local, glob))
+    assert machine.state is State.POKE_REACT
+
+
+def test_drag_commits_on_movement(app, sprites):
+    """位移超过 5px 阈值立即提交 DRAGGED（跟手拖拽不受延迟影响）。"""
+    machine, window = _idle_window(app, sprites)
+    tl = window.frameGeometry().topLeft()
+    p1 = QPoint(32, 32)
+    window.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, p1, tl + p1))
+    assert machine.state is not State.DRAGGED   # 刚按下未移动，不提交
+    p2 = QPoint(70, 70)                          # 位移 ~54px > 5px
+    window.mouseMoveEvent(_mev(QEvent.Type.MouseMove, p2, tl + p2))
+    assert machine.state is State.DRAGGED
+    window.mouseReleaseEvent(_mev(QEvent.Type.MouseButtonRelease, p2, tl + p2))
+    assert machine.state is not State.DRAGGED   # 松手已收尾（下落/落地/爬墙）
+
+
+def test_drag_commits_on_hold_timeout(app, sprites):
+    """按住超过 POKE_MAX_MS 仍不松手 → 计时器提交 DRAGGED（悬停时长判断）。"""
+    machine, window = _idle_window(app, sprites)
+    tl = window.frameGeometry().topLeft()
+    local = QPoint(32, 32)
+    glob = tl + local
+    window.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, local, glob))
+    assert machine.state is not State.DRAGGED
+    QTest.qWait(POKE_MAX_MS + 80)               # 让 singleShot 在事件循环触发
+    assert machine.state is State.DRAGGED, "按住超时应由计时器提交拖拽"
+    window.mouseReleaseEvent(_mev(QEvent.Type.MouseButtonRelease, local, glob))

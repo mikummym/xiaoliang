@@ -279,6 +279,29 @@ def test_poke_adds_mood_once_within_cooldown():
     assert status.mood == pytest.approx(53.0 - 0.3 * (1.1 / 60))
 
 
+def test_last_poke_result_cooldown_feedback():
+    """戳的数值结果三态（GUI 冷却反馈据此分流，见 state_machine.poke）：
+    加了心情 = raised，10 秒冷却中 = cooldown，心情满格 = capped。
+    用户反馈"有时戳心情没变化"的根因就是 cooldown/capped 旧版无任何提示。"""
+    status = PetStatus(mood=50.0)
+    m = make_machine(status=status)
+    m.poke()                             # 冷却已结束（启动初值）→ +3
+    assert m.last_poke_result == "raised"
+    m.tick(1.1)                          # 才过 1.1s，仍在 10s 冷却内
+    m.poke()                             # 冷却中：动画照播、数值不加
+    assert m.last_poke_result == "cooldown"
+    assert m.state is State.POKE_REACT
+
+
+def test_last_poke_result_capped_at_max_mood():
+    """心情已到 100 上限：冷却结束、status.poke() 返回 True，但 clamp 后
+    数值没涨 → capped（区别于 cooldown，提示文案不同）。"""
+    m = make_machine(status=PetStatus(mood=100.0))
+    m.poke()
+    assert m.last_poke_result == "capped"
+    assert m.status.mood == 100.0        # 满格封顶，没溢出
+
+
 def test_poke_while_dragged_without_move_restores_state():
     # GUI 判定"按下但无有效位移"= 戳：回退拖拽前状态，不触发下落
     m = make_machine()

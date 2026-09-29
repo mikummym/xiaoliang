@@ -6,6 +6,8 @@
 v0.2 新增（spec §2.3）：
 - 戳 vs 拖拽判定：按压 <250ms 且位移 <5px = 戳（machine.poke()），
   否则走 v0.1 拖拽流程（machine.drag_end() 下落）
+- 2026-09-29 起改为"延迟提交拖拽"：按下不再立刻进 DRAGGED，位移超阈值
+  或按住超 250ms 才提交，短戳全程不播"被拎着"动画（消除戳时的拎起闪烁）
 - 右键菜单：喂食（吃撑置灰）/ 状态展示 / 暂停·恢复 / 退出
 - 悬停 tooltip：每秒刷新"心情 😊N · 饱腹 🍚N · 状态中文"
 - 攀爬渲染：爬下 = 帧序倒放，左壁 = 水平镜像（get_frame kwargs）
@@ -78,7 +80,7 @@ STATE_ZH = {
 class PetWindow(QWidget):
     def __init__(self, machine: PetStateMachine, sprites: SpriteManager,
                  origin: QPoint | None = None, on_quit=None, *,
-                 sound=None):
+                 sound=None, on_poke_hint=None):
         super().__init__(None,
                          Qt.WindowType.FramelessWindowHint
                          | Qt.WindowType.WindowStaysOnTopHint
@@ -100,6 +102,17 @@ class PetWindow(QWidget):
         self._press_ts = 0.0
         self._press_pos: QPoint | None = None
         self._drag_moved = False
+        # ── 拖拽延迟提交（2026-09-29，用户反馈"戳时会闪一下拎起动画"）──
+        # 旧版按下一瞬间就 drag_start() 进 DRAGGED 播"被拎着"帧，短戳（<250ms）
+        # 也会先闪这段拎起动画再回退。改为延迟提交：只有位移超过阈值、或按住
+        # 超过 POKE_MAX_MS 才真正进 DRAGGED（见 _begin_drag）。短戳两个条件都
+        # 不满足，全程不进 DRAGGED，拎起动画不再闪。_drag_started 记录是否已
+        # 调过 drag_start，供松手时判断走 drag_end 收尾还是干净地走 poke。
+        self._drag_started = False
+        self._drag_commit_timer = QTimer(self)
+        self._drag_commit_timer.setSingleShot(True)
+        self._drag_commit_timer.setInterval(POKE_MAX_MS)
+        self._drag_commit_timer.timeout.connect(self._begin_drag)
         # 贴边推出列数（逻辑像素，0 = 不贴边）：用数值而非布尔，因为推出量
         # 要在贴边（36）与自由（0）两种世界之间连续过渡（跳下按下落进度归
         # 零、爬下落地前渐出），且在壁上被戳/跳下的瞬间 machine.x 仍吸附在
@@ -111,6 +124,10 @@ class PetWindow(QWidget):
         self._fall_start_margin = 0.0
         # ── v0.3 注入：声音引擎（戳音效）。sound 可为 None（测试/静音环境）
         self._sound = sound
+        # ── 戳冷却反馈回调（2026-09-29）：on_poke_hint(result)，result 为
+        # "cooldown"/"capped"（心情没加时）时由 main.py 弹提示气泡。None =
+        # 不弹（测试/未接线环境），戳照旧播动画只是没有额外提示
+        self._on_poke_hint = on_poke_hint
         # tooltip 刷新计时（毫秒累计，每满 1000 刷一次）
         self._tooltip_ms = 0
         self._refresh_tooltip()
@@ -262,6 +279,18 @@ class PetWindow(QWidget):
         painter.drawPixmap(0, 0, self._pixmap)
         painter.end()
 
+    def _begin_drag(self) -> None:
+        """提交拖拽：位移首次超阈值、或按住超时，才真正进入 DRAGGED。
+
+        短戳（POKE_MAX_MS 内松手且无位移）永远不会触发本方法，因此不会闪
+        "被拎着"动画。幂等——移动与超时计时器可能都调它，只进一次 DRAGGED。
+        """
+        if self._drag_started:
+            return
+        self._drag_started = True
+        self._drag_commit_timer.stop()
+        self.machine.drag_start()
+
     def mousePressEvent(self, event):
         # 任意鼠标键按下都取消待弹的 tooltip：右键按下后 contextMenuEvent
         # 的 QMenu.exec 会进入嵌套事件循环、定时器照跑，且菜单抓取鼠标后
@@ -270,12 +299,15 @@ class PetWindow(QWidget):
         self._tooltip_timer.stop()
         QToolTip.hideText()
         if event.button() == Qt.MouseButton.LeftButton:
-            # 记录按压时刻/位置供戳判定；照旧先 drag_start()——真拖拽时
-            # 状态机立即进入 DRAGGED 才能跟手（戳的情况松手时回退）
+            # 记录按压时刻/位置供戳判定。不再按下即 drag_start()——延迟到
+            # 确认是拖拽（位移超阈值或按住超时）才提交，短戳就不闪拎起动画
             self._press_ts = time.monotonic()
             self._press_pos = event.globalPosition().toPoint()
             self._drag_moved = False
-            self.machine.drag_start()
+            self._drag_started = False
+            # 启动"按住超时即判拖拽"计时（悬停时长判断）；位移先超阈值时由
+            # mouseMoveEvent 提前提交并停表
+            self._drag_commit_timer.start()
             self._drag_offset = (event.globalPosition().toPoint()
                                  - self.frameGeometry().topLeft())
             event.accept()
@@ -289,13 +321,14 @@ class PetWindow(QWidget):
             delta = pos - self._press_pos
             if math.hypot(delta.x(), delta.y()) > POKE_MAX_PX:
                 self._drag_moved = True
-        if self._drag_moved:
+                self._begin_drag()   # 位移超阈值 = 确认拖拽，立即提交（停超时表）
+        if self._drag_started:
+            # 跟手用钳制后的 machine 坐标，保证窗口不拖出工作区。以
+            # _drag_started 而非 _drag_moved 为准：按住超时提交（尚无位移）后
+            # 再移动鼠标也要能跟手
             target = pos - self._drag_offset
-            # machine 使用工作区坐标：全局屏幕坐标先减去工作区原点
             self.machine.drag_move(target.x() - self._origin.x(),
                                    target.y() - self._origin.y())
-            # 拖拽时立即跟手，不等下一个 tick（用钳制后的 machine 坐标，
-            # 保证窗口不拖出工作区）
             self.move(self._to_global(self.machine.x, self.machine.y))
         event.accept()
 
@@ -304,16 +337,26 @@ class PetWindow(QWidget):
         # 松手时 tick 为 no-op，角色停在半空 FALLING，恢复暂停后落地。
         if (event.button() == Qt.MouseButton.LeftButton
                 and self._drag_offset is not None):
+            self._drag_commit_timer.stop()   # 松手即取消未触发的"按住超时提交"
             self._drag_offset = None
             pressed_ms = (time.monotonic() - self._press_ts) * 1000.0
-            if not self._drag_moved and pressed_ms < POKE_MAX_MS:
-                # 短按且无有效位移 = 戳：不调 drag_end()（不触发下落），
-                # machine.poke() 内部会回退到拖拽前状态并播放反应。
-                # v0.3：poke() 返回是否受理（暂停时 False）——受理才播
-                # 音效，保证"暂停 = 完全无响应"的语义（spec §1.1）
-                if self.machine.poke() and self._sound is not None:
-                    self._sound.play_poke()
+            # 干净的戳 = 从未进入拖拽 + 无位移超阈值 + 未超时即松手。此时状态机
+            # 全程没离开原状态，poke() 原地播反应，不会闪"被拎着"动画。
+            # 按数值结果分流反馈（2026-09-29）：加了心情播音效；冷却中/满格弹
+            # 提示气泡，让"没加数值"有明确反馈而不是静默
+            if (not self._drag_started and not self._drag_moved
+                    and pressed_ms < POKE_MAX_MS):
+                if self.machine.poke():
+                    if self.machine.last_poke_result == "raised":
+                        if self._sound is not None:
+                            self._sound.play_poke()
+                    elif self._on_poke_hint is not None:
+                        self._on_poke_hint(self.machine.last_poke_result)
             else:
+                # 拖拽（位移或超时）松手。兜底：若因计时器误差还没提交，先补
+                # drag_start 再收尾，保证 drag_end 的前置（仅 DRAGGED 生效）成立
+                if not self._drag_started:
+                    self.machine.drag_start()
                 self.machine.drag_end()
             event.accept()
 

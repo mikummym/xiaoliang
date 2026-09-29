@@ -22,6 +22,14 @@ from xiaoliang.tray import PetTray
 # 数值自动保存间隔（spec §2.1：每 60 秒 + 喂食/戳/退出时即时保存）
 STATUS_SAVE_INTERVAL_MS = 60_000
 
+# 戳未加心情时的气泡提示（2026-09-29 冷却反馈）：cooldown = 10 秒数值
+# 冷却中，capped = 心情已到 100 上限。让"戳了没加数值"有明确反馈，
+# 不再被误以为生效（用户反馈的根因，见 state_machine.poke docstring）
+POKE_HINTS = {
+    "cooldown": "刚戳过啦，让我缓会儿~",
+    "capped": "心情已经满格啦~",
+}
+
 
 def setup_logging() -> None:
     """日志写到 %APPDATA%\\xiaoliang\\xiaoliang.log（打包后该目录仍可写）。"""
@@ -103,12 +111,17 @@ def main() -> int:
                         sounds_dir=assets_dir() / "sounds" / "poke")
 
     window = PetWindow(machine, sprites, origin=origin, on_quit=app.quit,
-                       sound=sound)
+                       sound=sound,
+                       # 迟绑定：bubble 在下方创建，戳触发回调时才解析，
+                       # 届时已赋值（Python 闭包捕获变量而非值）
+                       on_poke_hint=lambda result: bubble.say(
+                           POKE_HINTS.get(result, "")))
     window.move(origin.x() + int(machine.x), origin.y() + int(machine.y))
     window.show()
 
     # 语音气泡：锚点=小凉窗口全局矩形，随她移动/爬墙跟随（见 bubble.py）。
     # window.frameGeometry 是无参返回 QRect 的绑定方法，直接作 anchor 传入。
+    # 提醒语音（on_reminder）与戳冷却提示（on_poke_hint）共用这一个气泡
     bubble = BubbleWidget(anchor=window.frameGeometry)
 
     def save_cfg() -> None:

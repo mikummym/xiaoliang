@@ -148,6 +148,9 @@ class PetStateMachine:
         # 进 POKE_REACT 前原状态的剩余计时（反应播完后原样恢复，
         # 保证"回戳之前的状态"连时长也接续，而不是立刻到期换状态）
         self._resume_timer = 0.0
+        # 最近一次戳的真实结果（GUI 冷却反馈用，见 poke()）：
+        # "raised" 心情加了 / "cooldown" 冷却中没加 / "capped" 心情已满格
+        self.last_poke_result = "raised"
         # 暂停状态变更监听（GUI 层同步托盘/菜单勾选，见 tray.py）
         self._pause_listeners: list = []
         # v0.3 修复②：EATING 是否发生在空中（攀爬/坐顶时接住食物）——
@@ -274,6 +277,14 @@ class PetStateMachine:
 
         返回是否受理：暂停时 False（GUI 据此不播音效）。
 
+        last_poke_result（GUI 冷却反馈用）：受理时记录本次戳的真实数值结果
+        - "raised"：心情真的加了（冷却结束且未满格）
+        - "cooldown"：10 秒冷却中，动画照播但数值不加（用户"戳了没反应"
+          的根因——旧版无任何区分，看起来像生效其实没动）
+        - "capped"：冷却已结束但心情已到 100 上限，加不动
+        GUI（pet_window）据此分流：raised 播戳音效，cooldown/capped 弹提示
+        气泡，让"没加数值"这件事有明确反馈而不是静默。
+
         特判（spec §2.2/§2.3）：
         - SLEEPING/WOKEN 中被戳 → 进 WOKEN（睡眼惺忪），不是常规反应
         - DRAGGED 中被戳 = GUI 判定"按下但无有效位移"（点击而非拖拽）：
@@ -281,8 +292,16 @@ class PetStateMachine:
         """
         if self.paused:                  # v0.3 修复①（spec §1.1）：暂停 = 整体冻结，事件完全无响应
             return False
-        if self.status.poke() and self._on_status_change is not None:
+        mood_before = self.status.mood
+        scored = self.status.poke()      # 冷却结束才 True 并 +3
+        if scored and self._on_status_change is not None:
             self._on_status_change()     # 数值真的变了才落盘
+        if not scored:
+            self.last_poke_result = "cooldown"
+        elif self.status.mood > mood_before:
+            self.last_poke_result = "raised"
+        else:
+            self.last_poke_result = "capped"   # 冷却结束但心情满格，加不动
         base = (self._pre_drag_state if self.state is State.DRAGGED
                 else self.state)
         if base is None or base is State.DRAGGED:

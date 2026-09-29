@@ -329,13 +329,20 @@ class PetStateMachine:
         播完回原状态并接续剩余计时。
 
         拒绝条件（返回 False，零副作用）：暂停 / 睡觉 / 惺忪 / 被拎着 /
-        正在提醒中——这是防御性兜底，完整免打扰判定在 reminder 服务层。
-        被拒时调用方仍会念语音：提醒的使命是传达信息，动画只是锦上添花。
+        正在提醒中 / **在墙上（攀爬/坐顶）**——这是防御性兜底，完整免打扰
+        判定在 reminder 服务层。被拒时调用方仍会念语音：提醒的使命是传达
+        信息，动画只是锦上添花。
+
+        在墙上拒收的原因（2026-09-29 用户反馈"滑下来时突然转身闪烁一下"）：
+        伸懒腰是地面正面姿势，在壁上播放观感是"突然松墙转身面向观众、几秒
+        后又转回去继续爬"的 glitch；与睡觉/被拎同待遇——动画放不出就只念
+        语音（main.on_reminder 不看返回值，语音照念）。
         """
         if self.paused:
             return False
         if self.state in (State.SLEEPING, State.WOKEN, State.DRAGGED,
-                          State.REMINDING):
+                          State.REMINDING, State.CLIMBING,
+                          State.SITTING_TOP):
             return False
         self._pre_remind_state = self.state
         self._remind_resume_timer = self._timer

@@ -753,14 +753,24 @@ def test_remind_resumes_walking_remaining_timer():
     assert m.state is State.IDLE
 
 
-def test_remind_from_climbing_returns_to_climbing():
+def test_remind_rejected_while_on_wall():
+    """在墙上（攀爬/坐顶）拒收 remind 动画：地面伸懒腰姿势在壁上播放读作
+    "突然松墙转身又转回"的 glitch（2026-09-29 用户反馈）。拒收只停动画，
+    语音由接线方照念（main.on_reminder 不看返回值），与睡觉/被拎同待遇。
+    """
     m = make_machine(rng=FakeRandom(choice_value=-1, random_value=0.1),
                      start_x=0)
     m.tick(1.1)
     assert m.state is State.CLIMBING
-    assert m.remind() is True
-    m.tick(3.1)
-    assert m.state is State.CLIMBING   # 回墙上继续爬
+    assert m.remind() is False
+    assert m.state is State.CLIMBING   # 零副作用，继续爬不受影响
+    # 坐顶同待遇：爬到顶进 SITTING_TOP 后再拒一次
+    m.climb_direction = "up"
+    m.y = 0.0
+    m.tick(0.1)
+    assert m.state is State.SITTING_TOP
+    assert m.remind() is False
+    assert m.state is State.SITTING_TOP
 
 
 def test_remind_rejected_while_dragged():

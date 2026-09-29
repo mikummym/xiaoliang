@@ -8,6 +8,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+from xiaoliang.bubble import BubbleWidget
 from xiaoliang.config import (default_config_path, load_config,
                               needs_migration, save_config)
 from xiaoliang.pet_window import PetWindow
@@ -106,6 +107,10 @@ def main() -> int:
     window.move(origin.x() + int(machine.x), origin.y() + int(machine.y))
     window.show()
 
+    # 语音气泡：锚点=小凉窗口全局矩形，随她移动/爬墙跟随（见 bubble.py）。
+    # window.frameGeometry 是无参返回 QRect 的绑定方法，直接作 anchor 传入。
+    bubble = BubbleWidget(anchor=window.frameGeometry)
+
     def save_cfg() -> None:
         """配置落盘（托盘静音开关等运行时变更）；失败只记日志。
 
@@ -135,8 +140,13 @@ def main() -> int:
         # 语音照念不以 remind() 返回值为条件——睡觉/被拎着时动画放不出，
         # 但语音照样把话说出来
         machine.remind()
-        sound.speak(text,
-                    "sit_reminder" if kind == "sit" else "hourly_chime")
+        category = "sit_reminder" if kind == "sit" else "hourly_chime"
+        sound.speak(text, category)
+        # 气泡与分类开关同闸（关掉=既不念也不弹）；muted 只静音、气泡
+        # 照弹（静音≠不想看）。cfg["sound"] 是托盘就地改的活字典，
+        # 这里现读即拿到最新勾选态
+        if cfg["sound"].get(category, True):
+            bubble.say(text)
 
     reminders = ReminderService(logic, on_reminder)
     reminders.start()

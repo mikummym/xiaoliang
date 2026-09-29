@@ -119,6 +119,10 @@ python -m venv .venv
 [v0.2 设计文档](docs/superpowers/specs/2026-09-21-xiaoliang-v0.2-toy-design.md)
 与 [v0.3 设计文档](docs/superpowers/specs/2026-09-22-xiaoliang-v0.3-design.md)。
 
+新读者入门推荐先看
+[代码走读课（v0.4.2）](docs/code-walkthrough-v0.4.2.md)：架构总览 + 状态机核心，
+带源码摘录、状态转换图（mermaid）与设计决策/踩坑标注。
+
 ## 手动验收清单
 
 发布前逐项人工确认（规格 §6；GUI 层不做自动化测试）。

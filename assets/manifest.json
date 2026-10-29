@@ -6,8 +6,8 @@
   "actions": {
     "idle": {
       "file": "idle.png",
-      "frames": 4,
-      "fps": 3
+      "frames": 8,
+      "fps": 6
     },
     "walk_right": {
       "file": "walk_right.png",
@@ -16,48 +16,48 @@
     },
     "dragged": {
       "file": "dragged.png",
-      "frames": 4,
-      "fps": 4
+      "frames": 8,
+      "fps": 8
     },
     "falling": {
       "file": "falling.png",
-      "frames": 2,
-      "fps": 6
+      "frames": 4,
+      "fps": 12
     },
     "poke_react": {
       "file": "poke_react.png",
-      "frames": 2,
-      "fps": 6
+      "frames": 4,
+      "fps": 12
     },
     "eating": {
       "file": "eating.png",
-      "frames": 4,
-      "fps": 6
+      "frames": 8,
+      "fps": 12
     },
     "sleeping": {
       "file": "sleeping.png",
-      "frames": 2,
-      "fps": 2
+      "frames": 4,
+      "fps": 4
     },
     "woken": {
       "file": "woken.png",
-      "frames": 2,
-      "fps": 3
+      "frames": 4,
+      "fps": 6
     },
     "climbing": {
       "file": "climbing.png",
-      "frames": 4,
-      "fps": 8
+      "frames": 8,
+      "fps": 16
     },
     "sitting_top": {
       "file": "sitting_top.png",
-      "frames": 4,
-      "fps": 4
+      "frames": 8,
+      "fps": 8
     },
     "remind": {
       "file": "remind.png",
-      "frames": 4,
-      "fps": 4
+      "frames": 8,
+      "fps": 8
     },
     "walk_left": {
       "file": "walk_left.png",

@@ -49,36 +49,81 @@ CONTENT_MAX_H = 112  # 内容最大高度：头顶留 ~14px 余量给拉伸/弹�
 BG_TOL_SQ = 60 ** 2  # 泛洪容差（RGB 距离平方）：盖住 JPG 噪点与抗锯齿边
 HALO_MIN = 200       # 光晕清理阈值：min(r,g,b) 不低于它且低饱和才算白边
 
+def _interp(a, b, t):
+    """线性插值：a + t*(b-a)，支持数值序列和字符串（src 名直接取 a 的）。"""
+    if isinstance(a, (int, float)):
+        return a + t * (b - a)
+    return a   # src 名保持第一帧
+
+def densify(params: list, target: int) -> list:
+    """把参数列表加密到 target 帧：保留首/尾，中间线性插值。"""
+    if len(params) >= target:
+        return params
+    src_len = len(params)
+    out = []
+    for i in range(target):
+        t = i / (target - 1) * (src_len - 1)   # 在原索引空间里的浮点位置
+        lo = int(math.floor(t))
+        hi = min(src_len - 1, lo + 1)
+        frac = t - lo
+        out.append(tuple(_interp(params[lo][j], params[hi][j], frac)
+                         for j in range(len(params[0]))))
+    # 把插值产生的 float 整数化（sx/sy/rot/dy 最终给 make_frame 的 transform
+    # 用，保留 3 位小数不影响视觉但让输出干净可读）
+    return [(src, round(sx, 4), round(sy, 4), round(rot, 2), round(dy, 2))
+            for src, sx, sy, rot, dy in out]
+
+
 # 每个动作的帧参数表：(源图, sx, sy, 旋转度, 上下位移)。
 # 缩放/旋转都绕脚底锚点发生，所以 sy<1 是"蹲坐压扁"、sy>1 是"向上拉伸"。
+# 以下所有动作都经过 densify() 加密到目标帧数（manifest 声明），
+# 周期 = frames / fps 保持不变，动作观感只更丝滑不更快更慢。
 ACTIONS = {
-    # 站立呼吸：轻微起伏 + 胸腔缩放
-    "idle": [("stand", 1, 1, 0, 0), ("stand", 1, 1.01, 0, -1),
-             ("stand", 1, 1.02, 0, -2), ("stand", 1, 1.01, 0, -1)],
-    # 走路：改由 tools/gen_walk_from_photos.py 从 4 帧源图抽卡生成，
-    # 本脚本不再派生（重跑不覆写盘上 sheet），见模块 docstring
-    # 被拎着：像挂件一样左右晃
-    "dragged": [("stand", 1, 1, 4, 0), ("stand", 1, 1, -4, 0)],
-    # 下落：拉长身形 + 小幅摆动（慌）
-    "falling": [("stand", 0.97, 1.04, 3, 0), ("stand", 0.97, 1.04, -3, 0)],
-    # 被戳：先压扁吃惊，再弹起回敬
-    "poke_react": [("stand", 1.07, 0.93, 0, 0), ("stand", 0.97, 1.05, 0, -2)],
-    # 喂食：咀嚼压缩循环
-    "eating": [("stand", 1, 1, 0, 0), ("stand", 1.02, 0.97, 0, 0),
-               ("stand", 1, 1, 0, -1), ("stand", 1.02, 0.97, 0, 0)],
-    # 睡觉：睡姿图做腹式呼吸
-    "sleeping": [("sleep", 1, 1, 0, 0), ("sleep", 1.01, 1.03, 0, 0)],
-    # 睡醒：第 0 帧还是睡姿，第 1 帧弹起来变站姿（惊醒感）
-    "woken": [("sleep", 1, 1, 0, 0), ("stand", 1, 1.04, -3, -2)],
-    # 攀爬：左右拧身 + 上拽交替（贴墙时的蠕动）
-    "climbing": [("stand", 1, 1, 2.5, 0), ("stand", 1, 1, -2.5, -3),
-                 ("stand", 1, 1, 2.5, 0), ("stand", 1, 1, -2.5, -3)],
-    # 顶边坐姿：整体压扁成"坐下"，再叠呼吸
-    "sitting_top": [("stand", 1, 0.86, 0, 0), ("stand", 1, 0.87, 0, -1),
-                    ("stand", 1, 0.88, 0, -2), ("stand", 1, 0.87, 0, -1)],
-    # 提醒（伸懒腰）：向上拔高再回落
-    "remind": [("stand", 1, 1, 0, 0), ("stand", 0.97, 1.06, 0, 0),
-               ("stand", 0.94, 1.12, -2, 0), ("stand", 0.97, 1.06, 0, 0)],
+    # 站立呼吸：轻微起伏 + 胸腔缩放（原 4 帧 → 8 帧）
+    "idle": densify([
+        ("stand", 1, 1, 0, 0), ("stand", 1, 1.01, 0, -1),
+        ("stand", 1, 1.02, 0, -2), ("stand", 1, 1.01, 0, -1),
+    ], 8),
+    # 被拎着：像挂件一样左右晃（原 4 帧 → 8 帧）
+    "dragged": densify([
+        ("stand", 1, 1, 4, 0), ("stand", 1, 1, -4, 0),
+    ], 8),
+    # 下落：拉长身形 + 小幅摆动（慌）（原 2 帧 → 4 帧）
+    "falling": densify([
+        ("stand", 0.97, 1.04, 3, 0), ("stand", 0.97, 1.04, -3, 0),
+    ], 4),
+    # 被戳：先压扁吃惊，再弹起回敬（原 2 帧 → 4 帧）
+    "poke_react": densify([
+        ("stand", 1.07, 0.93, 0, 0), ("stand", 0.97, 1.05, 0, -2),
+    ], 4),
+    # 喂食：咀嚼压缩循环（原 4 帧 → 8 帧）
+    "eating": densify([
+        ("stand", 1, 1, 0, 0), ("stand", 1.02, 0.97, 0, 0),
+        ("stand", 1, 1, 0, -1), ("stand", 1.02, 0.97, 0, 0),
+    ], 8),
+    # 睡觉：睡姿图做腹式呼吸（原 2 帧 → 4 帧）
+    "sleeping": densify([
+        ("sleep", 1, 1, 0, 0), ("sleep", 1.01, 1.03, 0, 0),
+    ], 4),
+    # 睡醒：第 0 帧还是睡姿，第 1 帧弹起来变站姿（惊醒感）（原 2 帧 → 4 帧）
+    "woken": densify([
+        ("sleep", 1, 1, 0, 0), ("stand", 1, 1.04, -3, -2),
+    ], 4),
+    # 攀爬：左右拧身 + 上拽交替（贴墙时的蠕动）（原 4 帧 → 8 帧）
+    "climbing": densify([
+        ("stand", 1, 1, 2.5, 0), ("stand", 1, 1, -2.5, -3),
+        ("stand", 1, 1, 2.5, 0), ("stand", 1, 1, -2.5, -3),
+    ], 8),
+    # 顶边坐姿：整体压扁成"坐下"，再叠呼吸（原 4 帧 → 8 帧）
+    "sitting_top": densify([
+        ("stand", 1, 0.86, 0, 0), ("stand", 1, 0.87, 0, -1),
+        ("stand", 1, 0.88, 0, -2), ("stand", 1, 0.87, 0, -1),
+    ], 8),
+    # 提醒（伸懒腰）：向上拔高再回落（原 4 帧 → 8 帧）
+    "remind": densify([
+        ("stand", 1, 1, 0, 0), ("stand", 0.97, 1.06, 0, 0),
+        ("stand", 0.94, 1.12, -2, 0), ("stand", 0.97, 1.06, 0, 0),
+    ], 8),
 }
 
 

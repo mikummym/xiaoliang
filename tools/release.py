@@ -13,6 +13,9 @@ GitHub。本脚本把 tag / push / Release 三步串起来，避免手动漏步�
 token 来源（按优先级）：
   1. 环境变量 GITHUB_TOKEN
   2. ~/.git-credentials 里首个 https://...@github.com 条目（git store 格式）
+
+设有 GITHUB_TOKEN 时，push 直接走带 token 的临时 URL（不写入 .git/config、
+不落盘任何文件）；未设时走 git 自身凭据配置。token 在日志里统一打码。
 只用于调 GitHub API 创建 Release；push 本身走 git 的 credential helper。
 
 网络：脚本自动读取 HTTPS_PROXY / HTTP_PROXY（urllib 原生支持），
@@ -51,14 +54,27 @@ def git_exe() -> str:
     sys.exit("找不到 git，请先安装 Git for Windows")
 
 
+def mask(text: str) -> str:
+    """日志打码：任何形如 github_pat_xxx 或 ghp_xxx 的串一律替换。"""
+    return re.sub(r"(github_pat_\w+|ghp_\w+|gho_\w+|ghs_\w+)", "***", text)
+
+
 def run(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
     """在项目根目录执行命令，返回 CompletedProcess（文本模式）。"""
     proc = subprocess.run([git_exe(), *args], cwd=str(ROOT),
                           capture_output=True, text=True,
                           encoding="utf-8", errors="replace")
     if check and proc.returncode != 0:
-        sys.exit(f"git {' '.join(args)} 失败：\n{proc.stderr.strip()}")
+        sys.exit(mask(f"git {' '.join(args)} 失败：\n{proc.stderr.strip()}"))
     return proc
+
+
+def push_target(token: str | None, owner: str, repo: str) -> list[str]:
+    """push 的公共前缀参数：有 token 时禁用本地凭据助手并用临时带凭证 URL。"""
+    if not token:
+        return ["push", "origin"]
+    return ["-c", "credential.helper=", "push",
+            f"https://x-access-token:{token}@github.com/{owner}/{repo}.git"]
 
 
 def repo_slug() -> tuple[str, str]:
@@ -155,22 +171,23 @@ def main() -> int:
         return 0
 
     # ── tag + push ──
+    owner, repo = repo_slug()
+    token = read_token()
+    target = push_target(token, owner, repo)
     run(["tag", "-a", tag, "-m", f"release {tag}"])
     print(f"已创建 tag {tag}")
-    run(["push", "origin", branch])
-    run(["push", "origin", tag])
+    run([*target, branch])
+    run([*target, tag])
     print(f"已推送 {branch} 与 {tag}")
 
     if args.skip_release:
         return 0
 
     # ── GitHub Release ──
-    token = read_token()
     if not token:
         print("未找到 GITHUB_TOKEN 或 ~/.git-credentials，跳过创建 Release",
               file=sys.stderr)
         return 0
-    owner, repo = repo_slug()
     result = api(f"/repos/{owner}/{repo}/releases", token,
                  {"tag_name": tag, "name": title, "body": notes, "draft": False})
     print(f"Release 已发布：{result.get('html_url')}")

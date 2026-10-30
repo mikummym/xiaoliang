@@ -48,6 +48,8 @@ ANCHOR = (64, 126)   # 微动画锚点：脚底中心。脚踩在 y=126，留 2p
 CONTENT_MAX_H = 112  # 内容最大高度：头顶留 ~14px 余量给拉伸/弹跳动作
 BG_TOL_SQ = 60 ** 2  # 泛洪容差（RGB 距离平方）：盖住 JPG 噪点与抗锯齿边
 HALO_MIN = 200       # 光晕清理阈值：min(r,g,b) 不低于它且低饱和才算白边
+INTERIOR_TOL_SQ = 30 ** 2   # 封闭白块的颜色容差：只认"接近纯白"，皮肤(255,233,219)距离42不受影响
+INTERIOR_MIN_RATIO = 0.0003  # 封闭白块面积下限（占全图像素），低于它的当作眼睛高光保留
 
 def _interp(a, b, t):
     """线性插值：a + t*(b-a)，支持数值序列和字符串（src 名直接取 a 的）。"""
@@ -76,53 +78,64 @@ def densify(params: list, target: int) -> list:
 
 # 每个动作的帧参数表：(源图, sx, sy, 旋转度, 上下位移)。
 # 缩放/旋转都绕脚底锚点发生，所以 sy<1 是"蹲坐压扁"、sy>1 是"向上拉伸"。
-# 以下所有动作都经过 densify() 加密到目标帧数（manifest 声明），
-# 周期 = frames / fps 保持不变，动作观感只更丝滑不更快更慢。
+#
+# ⚠️ 关于幅度：原始幅度 × 2
+#    densify() 把 N 帧加密到 2N 帧，每步插值会让帧间差异减半。
+#    像素图无法表现亚像素级位移（0.67px 等于没动），所以必须把原始
+#    关键点的 sx/sy/rot/dy 幅度整体放大 2 倍，让加密后每步差异
+#    仍 ≥ 1px，画面上能看出过渡。
+#
+# ⚠️ 关于周期：manifest.json 里 fps 同步翻倍，frames/fps 保持恒等。
 ACTIONS = {
-    # 站立呼吸：轻微起伏 + 胸腔缩放（原 4 帧 → 8 帧）
+    # 站立呼吸：轻微起伏 + 胸腔缩放（原 4 帧 → 8 帧，幅度 ×2）
     "idle": densify([
-        ("stand", 1, 1, 0, 0), ("stand", 1, 1.01, 0, -1),
-        ("stand", 1, 1.02, 0, -2), ("stand", 1, 1.01, 0, -1),
+        ("stand", 1, 1, 0, 0), ("stand", 1, 1.02, 0, -2),
+        ("stand", 1, 1.04, 0, -4), ("stand", 1, 1.02, 0, -2),
     ], 8),
-    # 被拎着：像挂件一样左右晃（原 4 帧 → 8 帧）
-    "dragged": densify([
-        ("stand", 1, 1, 4, 0), ("stand", 1, 1, -4, 0),
-    ], 8),
-    # 下落：拉长身形 + 小幅摆动（慌）（原 2 帧 → 4 帧）
+    # 被拎着：用真·拎起动画 sheet（4帧循环两遍，无需仿射变换）
+    "dragged": [
+        ("dragged0", 1, 1, 0, 0), ("dragged1", 1, 1, 0, 0),
+        ("dragged2", 1, 1, 0, 0), ("dragged3", 1, 1, 0, 0),
+        ("dragged0", 1, 1, 0, 0), ("dragged1", 1, 1, 0, 0),
+        ("dragged2", 1, 1, 0, 0), ("dragged3", 1, 1, 0, 0),
+    ],
+    # 下落：拉长身形 + 小幅摆动（原 2 帧 → 4 帧，幅度 ×2）
     "falling": densify([
-        ("stand", 0.97, 1.04, 3, 0), ("stand", 0.97, 1.04, -3, 0),
+        ("stand", 0.94, 1.08, 6, 0), ("stand", 0.94, 1.08, -6, 0),
     ], 4),
-    # 被戳：先压扁吃惊，再弹起回敬（原 2 帧 → 4 帧）
+    # 被戳：先压扁吃惊，再弹起回敬（原 2 帧 → 4 帧，幅度 ×2）
     "poke_react": densify([
-        ("stand", 1.07, 0.93, 0, 0), ("stand", 0.97, 1.05, 0, -2),
+        ("stand", 1.14, 0.86, 0, 0), ("stand", 0.94, 1.10, 0, -4),
     ], 4),
-    # 喂食：咀嚼压缩循环（原 4 帧 → 8 帧）
+    # 喂食：咀嚼压缩循环（原 4 帧 → 8 帧，幅度 ×2）
     "eating": densify([
-        ("stand", 1, 1, 0, 0), ("stand", 1.02, 0.97, 0, 0),
-        ("stand", 1, 1, 0, -1), ("stand", 1.02, 0.97, 0, 0),
+        ("stand", 1, 1, 0, 0), ("stand", 1.04, 0.94, 0, 0),
+        ("stand", 1, 1, 0, -2), ("stand", 1.04, 0.94, 0, 0),
     ], 8),
-    # 睡觉：睡姿图做腹式呼吸（原 2 帧 → 4 帧）
+    # 睡觉：睡姿图做腹式呼吸（原 2 帧 → 4 帧，幅度 ×2）
     "sleeping": densify([
-        ("sleep", 1, 1, 0, 0), ("sleep", 1.01, 1.03, 0, 0),
+        ("sleep", 1, 1, 0, 0), ("sleep", 1.02, 1.06, 0, 0),
     ], 4),
-    # 睡醒：第 0 帧还是睡姿，第 1 帧弹起来变站姿（惊醒感）（原 2 帧 → 4 帧）
+    # 睡醒：睡姿 → 站姿弹起（原 2 帧 → 4 帧，幅度 ×2）
     "woken": densify([
-        ("sleep", 1, 1, 0, 0), ("stand", 1, 1.04, -3, -2),
+        ("sleep", 1, 1, 0, 0), ("stand", 1, 1.08, -6, -4),
     ], 4),
-    # 攀爬：左右拧身 + 上拽交替（贴墙时的蠕动）（原 4 帧 → 8 帧）
-    "climbing": densify([
-        ("stand", 1, 1, 2.5, 0), ("stand", 1, 1, -2.5, -3),
-        ("stand", 1, 1, 2.5, 0), ("stand", 1, 1, -2.5, -3),
-    ], 8),
-    # 顶边坐姿：整体压扁成"坐下"，再叠呼吸（原 4 帧 → 8 帧）
+    # 攀爬：用真·攀爬动画 sheet（4帧循环两遍，无需仿射变换）
+    "climbing": [
+        ("climb0", 1, 1, 0, 0), ("climb1", 1, 1, 0, 0),
+        ("climb2", 1, 1, 0, 0), ("climb3", 1, 1, 0, 0),
+        ("climb0", 1, 1, 0, 0), ("climb1", 1, 1, 0, 0),
+        ("climb2", 1, 1, 0, 0), ("climb3", 1, 1, 0, 0),
+    ],
+    # 顶边坐姿：用真正的 sit 图做呼吸（原 4 帧 → 8 帧，幅度 ×2）
     "sitting_top": densify([
-        ("stand", 1, 0.86, 0, 0), ("stand", 1, 0.87, 0, -1),
-        ("stand", 1, 0.88, 0, -2), ("stand", 1, 0.87, 0, -1),
+        ("sit", 1, 1, 0, 0), ("sit", 1, 1.02, 0, -2),
+        ("sit", 1, 1.04, 0, -4), ("sit", 1, 1.02, 0, -2),
     ], 8),
-    # 提醒（伸懒腰）：向上拔高再回落（原 4 帧 → 8 帧）
+    # 提醒（伸懒腰）：向上拔高再回落（原 4 帧 → 8 帧，幅度 ×2）
     "remind": densify([
-        ("stand", 1, 1, 0, 0), ("stand", 0.97, 1.06, 0, 0),
-        ("stand", 0.94, 1.12, -2, 0), ("stand", 0.97, 1.06, 0, 0),
+        ("stand", 1, 1, 0, 0), ("stand", 0.94, 1.12, 0, 0),
+        ("stand", 0.88, 1.24, -4, 0), ("stand", 0.94, 1.12, 0, 0),
     ], 8),
 }
 
@@ -193,16 +206,48 @@ def remove_background(img: Image.Image) -> Image.Image:
     for i in range(w * h):
         if _is_halo(i):
             a_px[i] = 0
+
+    # 封闭白块清理：描边常把腿缝、手臂内侧、头发缝隙围成一圈，白底被封在
+    # 里面，边界泛洪进不去（用户实测：stand 里腿间的白条在 128 帧上很明显）。
+    # 只认"接近纯白"的连通块，且要够大——皮肤/衣领颜色偏暖、距离超阈值，
+    # 眼睛高光面积远小于下限，都不会被误删。
+    min_area = max(8, round(w * h * INTERIOR_MIN_RATIO))
+    visited = bytearray(w * h)
+    for i in range(w * h):
+        if a_px[i] == 0 or visited[i] or _dist_sq(px[i], seed) > INTERIOR_TOL_SQ:
+            continue
+        group = [i]
+        visited[i] = 1
+        queue = deque([i])
+        while queue:
+            j = queue.popleft()
+            x, y = j % w, j // w
+            for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
+                if 0 <= nx < w and 0 <= ny < h:
+                    k = ny * w + nx
+                    if (a_px[k] and not visited[k]
+                            and _dist_sq(px[k], seed) <= INTERIOR_TOL_SQ):
+                        visited[k] = 1
+                        group.append(k)
+                        queue.append(k)
+        if len(group) >= min_area:
+            for k in group:
+                a_px[k] = 0
+
     alpha.putdata(a_px)
     out.putalpha(alpha)
     return out
 
 
-def fit_frame(base: Image.Image) -> Image.Image:
-    """裁包围盒 + 降采样到 128x128 帧：脚底贴 ANCHOR、水平居中。"""
+def fit_frame(base: Image.Image, scale_mul: float = 1.0) -> Image.Image:
+    """裁包围盒 + 降采样到 128x128 帧：脚底贴 ANCHOR、水平居中。
+
+    scale_mul 用于校正不同来源的角色大小差异（各源图是独立生成的，
+    头部直径可能不一致；跨动作头大小必须统一，否则换姿势时人会突然变大）。
+    """
     box = base.getbbox()  # alpha 非零包围盒
     char = base.crop(box)
-    scale = min((FRAME - 8) / char.width, CONTENT_MAX_H / char.height)
+    scale = min((FRAME - 8) / char.width, CONTENT_MAX_H / char.height) * scale_mul
     nw, nh = max(1, round(char.width * scale)), max(1, round(char.height * scale))
     # BOX = 块平均，像素风源图降采样不产生新振铃色
     char = char.resize((nw, nh), Image.BOX)
@@ -235,10 +280,28 @@ def make_frame(base: Image.Image, sx, sy, rot_deg, dy) -> Image.Image:
 
 def main() -> int:
     manifest = json.loads((ASSETS_DIR / "manifest.json").read_text(encoding="utf-8"))
+
+    def _load_single(name: str) -> Image.Image:
+        return fit_frame(remove_background(Image.open(SRC_DIR / name)))
+
+    def _load_sheet(name: str, n: int, prefix: str, scale_mul: float = 1.0) -> dict:
+        """多帧 sheet（横排 n 帧正方形）拆成 n 个单帧底图。"""
+        img = Image.open(SRC_DIR / name)
+        fw = img.width // n
+        return {f"{prefix}{i}": fit_frame(remove_background(
+            img.crop((i * fw, 0, (i + 1) * fw, img.height))), scale_mul)
+            for i in range(n)}
+
     bases = {
-        "stand": fit_frame(remove_background(Image.open(SRC_DIR / "stand.jpg"))),
-        "sleep": fit_frame(remove_background(Image.open(SRC_DIR / "sleep.jpg"))),
+        "stand": _load_single("stand.jpg"),
+        "sleep": _load_single("sleep.jpg"),
+        "sit": _load_single("sit.png"),
     }
+    # dragged.png 的角色比 stand 画得大约 1.8 倍（实测头宽 168 vs 461，
+    # 各自 fit 后约 92px vs 50px）。乘 0.8 折中：保留拎起时的体量感，
+    # 又不至于顶满 128 帧显得被裁切糊边
+    bases.update(_load_sheet("dragged.png", 4, "dragged", scale_mul=0.8))
+    bases.update(_load_sheet("climbing2.png", 4, "climb"))
     # 打印站立帧左右空白列数：贴边推出量（pet_window 的 CLING_MARGIN_*）
     # 要按新素材的对称空白重新标定，这里给出实测值
     bbox = bases["stand"].getbbox()
